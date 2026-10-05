@@ -1,0 +1,23 @@
+[package]
+name = "remote-phone-pairing-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Shared OPAQUE pairing primitives for Remote Phone"
+
+[lib]
+name = "remote_phone_pairing_core"
+crate-type = ["rlib"]
+
+[dependencies]
+hkdf = "0.12.4"
+hmac = "0.12.1"
+opaque-ke = { version = "=4.0.1", features = ["argon2", "ristretto255", "std"] }
+rand = { version = "0.8.5", features = ["getrandom"] }
+sha2 = "0.10.9"
+subtle = "2.6.1"
+thiserror = "2.0.12"
+zeroize = { version = "1.8.1", features = ["alloc"] }
+
+[dev-dependencies]
+rand_chacha = "0.3.1"

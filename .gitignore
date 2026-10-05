@@ -6,6 +6,9 @@ apps/desktop/release/
 apps/desktop/native-runtime/
 apps/desktop/.vite/
 
+# Rust
+**/target/
+
 # Android / Gradle
 .gradle/
 **/.gradle/
