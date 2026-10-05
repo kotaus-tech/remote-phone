@@ -94,7 +94,7 @@ int wmain() {
         return 1;
     }
 
-    result = camera->Start();
+    result = camera->Start(nullptr);
     if (FAILED(result)) {
         ReportFailure(L"не удалось запустить тестовую виртуальную камеру", result);
         camera->Shutdown();

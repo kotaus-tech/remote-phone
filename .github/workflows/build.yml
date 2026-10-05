@@ -30,7 +30,7 @@ jobs:
           cache-dependency-path: apps/android/**/*.gradle*
 
       - name: Установить Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Установить платформу сборки
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
