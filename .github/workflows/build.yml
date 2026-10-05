@@ -1,0 +1,101 @@
+name: Сборка приложений
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: APK Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: apps/android/**/*.gradle*
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить платформу сборки
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Собрать APK
+        working-directory: apps/android
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Сохранить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Видоискатель-Android-APK
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Setup.exe и нативные компоненты x64
+    runs-on: windows-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Подготовить MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Подготовить NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Собрать нативные компоненты
+        shell: pwsh
+        run: ./scripts/build-native.ps1
+
+      - name: Собрать Windows Setup.exe
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run dist:win
+
+      - name: Проверить установку и удаление Setup.exe
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -LiteralPath 'apps/desktop/release' -Filter '*Setup*.exe' | Select-Object -First 1
+          if ($null -eq $setup) { throw 'Setup.exe не найден в каталоге сборки.' }
+          ./scripts/verify-installer.ps1 -InstallerPath $setup.FullName
+
+      - name: Сохранить Setup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Видоискатель-Windows-Setup-x64
+          path: apps/desktop/release/*Setup*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Сохранить нативные компоненты x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: Видоискатель-Windows-native-x64
+          path: apps/desktop/native-runtime/*
+          if-no-files-found: error
+          retention-days: 14

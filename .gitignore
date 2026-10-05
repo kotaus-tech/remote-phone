@@ -1,0 +1,29 @@
+# JavaScript / Electron
+node_modules/
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/release/
+apps/desktop/native-runtime/
+apps/desktop/.vite/
+
+# Android / Gradle
+.gradle/
+**/.gradle/
+**/build/
+local.properties
+*.iml
+
+# Windows native build outputs
+native/build/
+native/packages/
+native/vendor/Windows-Camera/Samples/VirtualCamera/packages/
+native/vendor/Windows-Camera/Samples/VirtualCamera/VirtualCameraMediaSource/x64/
+native/vendor/Windows-Camera/Samples/VirtualCamera/VirtualCameraMediaSource/ARM*/
+*.user
+*.suo
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
