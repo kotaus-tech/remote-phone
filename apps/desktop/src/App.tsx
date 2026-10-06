@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { PairingDevice, PairingStatus } from './remotePhone';
+import type { CameraHostStatus, PairingDevice, PairingStatus } from './remotePhone';
 
 type PageKey = 'devices' | 'screen' | 'camera' | 'settings' | 'diagnostics';
 
@@ -29,9 +29,9 @@ const headings: Record<PageKey, { eyebrow: string; title: string; description: s
     description: 'Предпросмотр и управление появятся после настройки защищённого соединения.',
   },
   camera: {
-    eyebrow: 'Камера телефона',
+    eyebrow: 'Тестовая камера Windows',
     title: 'Веб-камера',
-    description: 'Виртуальная камера будет доступна после проверки нативного видеотракта.',
+    description: 'При запуске приложения включается тестовая камера с движущимся счётчиком. Оставьте приложение открытым во время проверки.',
   },
   settings: {
     eyebrow: 'Настройки',
@@ -52,15 +52,28 @@ function App() {
     phase: 'discovering',
     message: 'Ищем телефоны в локальной сети…',
   });
+  const [cameraStatus, setCameraStatus] = useState<CameraHostStatus>({
+    phase: 'starting',
+    message: 'Тестовая виртуальная камера запускается вместе с приложением…',
+  });
   const heading = headings[page];
 
   useEffect(() => {
     const api = window.remotePhone;
     if (!api) {
       setPairingStatus({ phase: 'unavailable', message: 'Сетевой адаптер доступен в приложении Windows.' });
+      setCameraStatus({ phase: 'unavailable', message: 'Тестовая камера доступна в установленном приложении Windows.' });
       return;
     }
     let active = true;
+    const removeCameraStatusListener = api.onCameraStatus((nextStatus) => {
+      if (active) setCameraStatus(nextStatus);
+    });
+    api.getCameraStatus().then((nextStatus) => {
+      if (active) setCameraStatus(nextStatus);
+    }).catch(() => {
+      if (active) setCameraStatus({ phase: 'error', message: 'Не удалось получить состояние тестовой камеры.' });
+    });
     const removeDevicesListener = api.onDevices((nextDevices) => {
       if (active) setDevices(nextDevices);
     });
@@ -74,6 +87,7 @@ function App() {
     });
     return () => {
       active = false;
+      removeCameraStatusListener();
       removeDevicesListener();
       removeStatusListener();
     };
@@ -141,7 +155,7 @@ function App() {
           </div>
           {page === 'devices' && <DevicesPage devices={devices} status={pairingStatus} onStatusChange={setPairingStatus} />}
           {page === 'screen' && <ScreenPage connected={connected} />}
-          {page === 'camera' && <CameraPage />}
+          {page === 'camera' && <CameraPage status={cameraStatus} />}
           {page === 'settings' && <SettingsPage />}
           {page === 'diagnostics' && <DiagnosticsPage />}
         </main>
@@ -334,25 +348,46 @@ function ScreenPage({ connected }: { connected: boolean }) {
   );
 }
 
-function CameraPage() {
+function CameraPage({ status }: { status: CameraHostStatus }) {
+  const isRunning = status.phase === 'running';
+  const statusLabel = isRunning
+    ? 'Камера запущена'
+    : status.phase === 'starting'
+      ? 'Запускается…'
+      : status.phase === 'stopped'
+        ? 'Камера остановлена'
+        : status.phase === 'unavailable'
+          ? 'Недоступна в этом режиме'
+          : 'Не удалось запустить';
+
   return (
     <section className="camera-layout">
       <article className="panel camera-panel">
-        <div className="preview-toolbar"><span>ПРЕДПРОСМОТР · 16:9</span><span>Виртуальная камера не запущена</span></div>
-        <div className="camera-stage">
-          <div className="camera-status-icon" aria-hidden="true">◉</div>
-          <strong>Нет сигнала</strong>
-          <span>Сначала нужно подключить телефон</span>
+        <div className="preview-toolbar">
+          <span>СИНТЕТИЧЕСКИЙ ПОТОК · NV12</span>
+          <span className={`camera-state ${status.phase}`} role="status">{statusLabel}</span>
         </div>
-        <div className="preview-actions"><button type="button" className="secondary-button" disabled>Профи</button><button type="button" className="secondary-button" disabled>Зеркало</button></div>
+        <div className={`camera-stage ${isRunning ? 'camera-stage-ready' : ''}`} aria-live="polite">
+          <div className="camera-status-icon" aria-hidden="true">◉</div>
+          <strong>{isRunning ? 'Камера запущена' : statusLabel}</strong>
+          <span>{status.message}</span>
+        </div>
+        <div className="camera-actions-note">
+          Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Само приложение не показывает второй предпросмотр.
+        </div>
       </article>
       <aside className="panel camera-note">
         <div className="note-mark blue" aria-hidden="true">i</div>
-        <h2>Сначала проверим изображение</h2>
-        <p>Перед полными настройками проверим, что картинка телефона быстро и надёжно появляется в приложениях Windows.</p>
+        <h2>Проверка в приложениях Windows</h2>
+        <p>Это ранний тест установки и видеопотока. В кадре должны двигаться полосы и обновляться крупный шестизначный счётчик.</p>
         <div className="divider" />
-        <div className="camera-note-row"><span>Источник</span><strong>Телефон</strong></div>
-        <div className="camera-note-row"><span>Куда передаётся</span><strong>Камера Windows</strong></div>
+        <div className="camera-note-row"><span>Режимы</span><strong>720p / 1080p · 30 / 60 fps</strong></div>
+        <div className="camera-note-row"><span>Форматы</span><strong>NV12 · RGB32</strong></div>
+        <div className="camera-note-row"><span>Завершение</span><strong>Закрыть «Видоискатель»</strong></div>
+        <div className="camera-test-instructions">
+          <strong>Оставьте приложение открытым</strong>
+          <span>Проверьте webcamtests.com, OBS и Discord по очереди. Закройте их перед выходом из приложения — камера действует только пока открыт «Видоискатель».</span>
+        </div>
       </aside>
     </section>
   );

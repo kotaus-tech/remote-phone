@@ -4,11 +4,38 @@
 
 #include "pch.h"
 
-#define NUM_IMAGE_ROWS 480
-#define NUM_IMAGE_COLS 640
-#define BYTES_PER_PIXEL 4
-#define IMAGE_BUFFER_SIZE_BYTES (NUM_IMAGE_ROWS * NUM_IMAGE_COLS * BYTES_PER_PIXEL)
-#define IMAGE_ROW_SIZE_BYTES (NUM_IMAGE_COLS * BYTES_PER_PIXEL)
+namespace
+{
+    struct SupportedMode
+    {
+        GUID subtype;
+        UINT32 width;
+        UINT32 height;
+        UINT32 framesPerSecond;
+    };
+
+    HRESULT CreateVideoMediaType(
+        _In_ const SupportedMode& mode,
+        _Out_ wil::com_ptr_nothrow<IMFMediaType>& mediaType)
+    {
+        RETURN_IF_FAILED(MFCreateMediaType(&mediaType));
+        RETURN_IF_FAILED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+        RETURN_IF_FAILED(mediaType->SetGUID(MF_MT_SUBTYPE, mode.subtype));
+        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
+        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
+        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE));
+        RETURN_IF_FAILED(MFSetAttributeSize(mediaType.get(), MF_MT_FRAME_SIZE, mode.width, mode.height));
+        RETURN_IF_FAILED(MFSetAttributeRatio(mediaType.get(), MF_MT_FRAME_RATE, mode.framesPerSecond, 1));
+        RETURN_IF_FAILED(MFSetAttributeRatio(mediaType.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+        const ULONGLONG bitsPerPixel = IsEqualGUID(mode.subtype, MFVideoFormat_NV12) ? 12ULL : 32ULL;
+        const ULONGLONG bitRate =
+            static_cast<ULONGLONG>(mode.width) * mode.height * bitsPerPixel * mode.framesPerSecond;
+        RETURN_HR_IF(E_INVALIDARG, bitRate > MAXDWORD);
+        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(bitRate)));
+        return S_OK;
+    }
+}
 
 namespace winrt::WindowsSample::implementation
 {
@@ -31,36 +58,24 @@ namespace winrt::WindowsSample::implementation
         m_allocatorUsage = allocatorUsage;
         m_diagnosticLogPath = diagnosticLogPath == nullptr ? L"" : diagnosticLogPath;
 
-        const uint32_t NUM_MEDIATYPES = 2;
-        wil::unique_cotaskmem_array_ptr<wil::com_ptr_nothrow<IMFMediaType>> mediaTypeList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<IMFMediaType>>(NUM_MEDIATYPES);
+        const SupportedMode supportedModes[] =
+        {
+            { MFVideoFormat_NV12, 1280, 720, 30 },
+            { MFVideoFormat_NV12, 1280, 720, 60 },
+            { MFVideoFormat_NV12, 1920, 1080, 30 },
+            { MFVideoFormat_NV12, 1920, 1080, 60 },
+            { MFVideoFormat_RGB32, 640, 480, 30 },
+        };
+        constexpr DWORD mediaTypeCount = static_cast<DWORD>(ARRAYSIZE(supportedModes));
+        auto mediaTypeList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<IMFMediaType>>(mediaTypeCount);
+        RETURN_IF_NULL_ALLOC(mediaTypeList.get());
 
-        // Initialize media type and set the video output media type.
-        wil::com_ptr_nothrow<IMFMediaType> spMediaType;
-        RETURN_IF_FAILED(MFCreateMediaType(&spMediaType));
-        spMediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        spMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        spMediaType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        spMediaType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-        MFSetAttributeSize(spMediaType.get(), MF_MT_FRAME_SIZE, NUM_IMAGE_COLS, NUM_IMAGE_ROWS);
-        MFSetAttributeRatio(spMediaType.get(), MF_MT_FRAME_RATE, 30, 1);
-        // frame size * pixle bit size * framerate
-        uint32_t bitrate = (uint32_t)(NUM_IMAGE_COLS * 1.5 * NUM_IMAGE_ROWS * 8* 30);
-        spMediaType->SetUINT32(MF_MT_AVG_BITRATE, bitrate);
-        MFSetAttributeRatio(spMediaType.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-        mediaTypeList[0] = spMediaType.detach();
-
-        RETURN_IF_FAILED(MFCreateMediaType(&spMediaType));
-        spMediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        spMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-        spMediaType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        spMediaType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-        MFSetAttributeSize(spMediaType.get(), MF_MT_FRAME_SIZE, NUM_IMAGE_COLS, NUM_IMAGE_ROWS);
-        MFSetAttributeRatio(spMediaType.get(), MF_MT_FRAME_RATE, 30, 1);
-        // frame size * pixle bit size * framerate
-        bitrate = (uint32_t)(NUM_IMAGE_COLS * NUM_IMAGE_ROWS * 4 * 8* 30);
-        spMediaType->SetUINT32(MF_MT_AVG_BITRATE, bitrate);
-        MFSetAttributeRatio(spMediaType.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-        mediaTypeList[1] = spMediaType.detach();
+        for (DWORD index = 0; index < mediaTypeCount; ++index)
+        {
+            wil::com_ptr_nothrow<IMFMediaType> mediaType;
+            RETURN_IF_FAILED(CreateVideoMediaType(supportedModes[index], mediaType));
+            mediaTypeList[index] = mediaType.detach();
+        }
 
         RETURN_IF_FAILED(MFCreateAttributes(&m_spAttributes, 10));
         RETURN_IF_FAILED(_SetStreamAttributes(m_spAttributes.get()));
@@ -68,7 +83,11 @@ namespace winrt::WindowsSample::implementation
         RETURN_IF_FAILED(MFCreateEventQueue(&m_spEventQueue));
 
         // Initialize stream descriptors
-        RETURN_IF_FAILED(MFCreateStreamDescriptor(m_dwStreamId /*StreamId*/, NUM_MEDIATYPES /*MT count*/, mediaTypeList.get(), &m_spStreamDesc));
+        RETURN_IF_FAILED(MFCreateStreamDescriptor(
+            m_dwStreamId /*StreamId*/,
+            mediaTypeCount /*MT count*/,
+            mediaTypeList.get(),
+            &m_spStreamDesc));
 
         RETURN_IF_FAILED(m_spStreamDesc->GetMediaTypeHandler(&spTypeHandler));
         RETURN_IF_FAILED(spTypeHandler->SetCurrentMediaType(mediaTypeList[0]));
@@ -277,7 +296,9 @@ namespace winrt::WindowsSample::implementation
         RETURN_IF_FAILED(logFailure(L"Unlock2D", buffer2D->Unlock2D()));
 
         RETURN_IF_FAILED(logFailure(L"SetSampleTime", sample->SetSampleTime(MFGetSystemTime())));
-        RETURN_IF_FAILED(logFailure(L"SetSampleDuration", sample->SetSampleDuration(333333)));
+        RETURN_IF_FAILED(logFailure(
+            L"SetSampleDuration",
+            sample->SetSampleDuration(static_cast<LONGLONG>(m_sampleDuration100ns))));
         if (pToken != nullptr)
         {
             RETURN_IF_FAILED(logFailure(L"SetSampleToken", sample->SetUnknown(MFSampleExtension_Token, pToken)));
@@ -336,7 +357,7 @@ namespace winrt::WindowsSample::implementation
         winrt::slim_lock_guard lock(m_Lock);
 
         RETURN_IF_FAILED(_CheckShutdownRequiresLock());
-        
+
         RETURN_HR_IF_NULL(E_INVALIDARG, pState);
         *pState = m_streamState;
 
@@ -393,14 +414,15 @@ namespace winrt::WindowsSample::implementation
             : (IsEqualGUID(subtype, MFVideoFormat_RGB32) ? L"RGB32" : L"other");
         WriteMediaSourceDiagnostic(
             m_diagnosticLogPath.c_str(),
-            L"selected_media_type stream_id=%u subtype=%s subtype_guid=%s frame_size=%ux%u frame_rate=%u/%u sample_duration_100ns=333333",
+            L"selected_media_type stream_id=%u subtype=%s subtype_guid=%s frame_size=%ux%u frame_rate=%u/%u sample_duration_100ns=%I64u",
             static_cast<unsigned>(m_dwStreamId),
             subtypeName,
             subtypeGuid,
             static_cast<unsigned>(width),
             static_cast<unsigned>(height),
             static_cast<unsigned>(frameRateNumerator),
-            static_cast<unsigned>(frameRateDenominator));
+            static_cast<unsigned>(frameRateDenominator),
+            static_cast<unsigned long long>(m_sampleDuration100ns));
 
         return S_OK;
     }
@@ -454,7 +476,7 @@ namespace winrt::WindowsSample::implementation
         return S_OK;
     }
 
-    
+
     //////////////////////////////////////////////////////////////////////////////////////////
     // Private methods
 
@@ -516,6 +538,18 @@ namespace winrt::WindowsSample::implementation
             }
         }
 
+        UINT32 durationFrameRateNumerator = 0;
+        UINT32 durationFrameRateDenominator = 0;
+        RETURN_IF_FAILED(MFGetAttributeRatio(
+            m_spMediaType.get(),
+            MF_MT_FRAME_RATE,
+            &durationFrameRateNumerator,
+            &durationFrameRateDenominator));
+        RETURN_HR_IF(E_INVALIDARG, durationFrameRateNumerator == 0 || durationFrameRateDenominator == 0);
+        m_sampleDuration100ns =
+            (10000000ULL * durationFrameRateDenominator + durationFrameRateNumerator / 2) /
+            durationFrameRateNumerator;
+
         if ((m_streamState != MF_STREAM_STATE_RUNNING) || !bMatch)
         {
             // Create the allocator if one doesn't exist
@@ -545,7 +579,7 @@ namespace winrt::WindowsSample::implementation
 
         if (bSendEvent)
         {
-            // Post MEStreamStarted event to signal stream has started 
+            // Post MEStreamStarted event to signal stream has started
             RETURN_IF_FAILED(m_spEventQueue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
         }
 

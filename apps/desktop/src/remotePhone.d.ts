@@ -15,6 +15,11 @@ export type PairingConnectResult = {
   message?: string;
 };
 
+export type CameraHostStatus = {
+  phase: 'starting' | 'running' | 'error' | 'stopped' | 'unavailable';
+  message: string;
+};
+
 declare global {
   interface Window {
     remotePhone?: {
@@ -24,6 +29,8 @@ declare global {
       disconnect: () => Promise<{ ok: boolean }>;
       onDevices: (callback: (devices: PairingDevice[]) => void) => () => void;
       onStatus: (callback: (status: PairingStatus) => void) => () => void;
+      getCameraStatus: () => Promise<CameraHostStatus>;
+      onCameraStatus: (callback: (status: CameraHostStatus) => void) => () => void;
     };
   }
 }

@@ -47,6 +47,7 @@ namespace
         ULONG rgbMask,
         UINT32 frameNumber)
     {
+        (void)rgbMask;
         constexpr DWORD kDigitCount = 6;
         constexpr DWORD kDigitWidth = 36;
         constexpr DWORD kDigitHeight = 72;
@@ -86,7 +87,8 @@ namespace
         constexpr DWORD kDivisors[kDigitCount] = { 100000, 10000, 1000, 100, 10, 1 };
 
         FillRectangle(pixels, pitch, width, height, kPanelLeft, kPanelTop, kPanelWidth, kPanelHeight, 0);
-        const uint32_t foreground = static_cast<uint32_t>(rgbMask) & 0x00FFFFFF;
+        // A white counter on the dark panel remains legible in browser/meeting-app previews.
+        const uint32_t foreground = 0x00FFFFFF;
 
         for (DWORD index = 0; index < kDigitCount; ++index)
         {
@@ -128,6 +130,85 @@ namespace
             }
         }
     }
+
+    bool GetCounterPixelColor(
+        DWORD x,
+        DWORD y,
+        DWORD width,
+        DWORD height,
+        UINT32 frameNumber,
+        ULONG* color)
+    {
+        constexpr DWORD digitCount = 6;
+        constexpr DWORD digitWidth = 36;
+        constexpr DWORD digitHeight = 72;
+        constexpr DWORD segmentThickness = 8;
+        constexpr DWORD digitGap = 6;
+        constexpr DWORD padding = 8;
+        constexpr DWORD panelLeft = 12;
+        constexpr DWORD panelTop = 12;
+        constexpr DWORD panelWidth = padding * 2 + digitCount * digitWidth + (digitCount - 1) * digitGap;
+        constexpr DWORD panelHeight = padding * 2 + digitHeight;
+        constexpr BYTE top = 1 << 0;
+        constexpr BYTE upperRight = 1 << 1;
+        constexpr BYTE lowerRight = 1 << 2;
+        constexpr BYTE bottom = 1 << 3;
+        constexpr BYTE lowerLeft = 1 << 4;
+        constexpr BYTE upperLeft = 1 << 5;
+        constexpr BYTE middle = 1 << 6;
+        constexpr BYTE digitSegments[10] =
+        {
+            top | upperRight | lowerRight | bottom | lowerLeft | upperLeft,
+            upperRight | lowerRight,
+            top | upperRight | middle | lowerLeft | bottom,
+            top | upperRight | middle | lowerRight | bottom,
+            upperLeft | middle | upperRight | lowerRight,
+            top | upperLeft | middle | lowerRight | bottom,
+            top | upperLeft | middle | lowerRight | bottom | lowerLeft,
+            top | upperRight | lowerRight,
+            top | upperRight | lowerRight | bottom | lowerLeft | upperLeft | middle,
+            top | upperRight | lowerRight | bottom | upperLeft | middle
+        };
+        constexpr DWORD divisors[digitCount] = { 100000, 10000, 1000, 100, 10, 1 };
+
+        if (width < panelLeft + panelWidth || height < panelTop + panelHeight ||
+            x < panelLeft || x >= panelLeft + panelWidth ||
+            y < panelTop || y >= panelTop + panelHeight)
+        {
+            return false;
+        }
+
+        *color = 0;
+        const DWORD halfHeight = digitHeight / 2;
+        const DWORD horizontalWidth = digitWidth - 2 * segmentThickness;
+        const DWORD verticalHeight = halfHeight - segmentThickness;
+        for (DWORD index = 0; index < digitCount; ++index)
+        {
+            const DWORD digit = (frameNumber % 1000000U / divisors[index]) % 10U;
+            const BYTE segments = digitSegments[digit];
+            const DWORD left = panelLeft + padding + index * (digitWidth + digitGap);
+            const DWORD topEdge = panelTop + padding;
+            const auto inside = [x, y](DWORD leftEdge, DWORD topEdge, DWORD rectangleWidth, DWORD rectangleHeight)
+            {
+                return x >= leftEdge && x < leftEdge + rectangleWidth &&
+                    y >= topEdge && y < topEdge + rectangleHeight;
+            };
+
+            if (((segments & top) && inside(left + segmentThickness, topEdge, horizontalWidth, segmentThickness)) ||
+                ((segments & upperRight) && inside(left + digitWidth - segmentThickness, topEdge + segmentThickness, segmentThickness, verticalHeight)) ||
+                ((segments & lowerRight) && inside(left + digitWidth - segmentThickness, topEdge + halfHeight, segmentThickness, verticalHeight)) ||
+                ((segments & bottom) && inside(left + segmentThickness, topEdge + digitHeight - segmentThickness, horizontalWidth, segmentThickness)) ||
+                ((segments & lowerLeft) && inside(left, topEdge + halfHeight, segmentThickness, verticalHeight)) ||
+                ((segments & upperLeft) && inside(left, topEdge + segmentThickness, segmentThickness, verticalHeight)) ||
+                ((segments & middle) && inside(left + segmentThickness, topEdge + halfHeight - segmentThickness / 2, horizontalWidth, segmentThickness)))
+            {
+                *color = 0x00FFFFFF;
+                break;
+            }
+        }
+        return true;
+    }
+
 }
 
 HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
@@ -139,7 +220,17 @@ HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
     {
         RETURN_HR_MSG(MF_E_UNSUPPORTED_FORMAT, "Unsupported format: %s", winrt::to_hstring(m_subType).data());
     }
-    MFGetAttributeSize(pMediaType, MF_MT_FRAME_SIZE, &m_width, &m_height);
+    RETURN_IF_FAILED(MFGetAttributeSize(pMediaType, MF_MT_FRAME_SIZE, &m_width, &m_height));
+    RETURN_HR_IF(E_INVALIDARG, m_width == 0 || m_height == 0);
+    if (m_subType == MFVideoFormat_NV12)
+    {
+        RETURN_HR_IF(E_INVALIDARG, (m_width & 1) != 0 || (m_height & 1) != 0);
+        RETURN_HR_IF(E_INVALIDARG, m_width > 1920 || m_height > 1080);
+    }
+    else
+    {
+        RETURN_HR_IF(E_INVALIDARG, m_width > 640 || m_height > 480);
+    }
 
     return S_OK;
 }
@@ -166,16 +257,88 @@ HRESULT SimpleFrameGenerator::CreateFrame(
 
         RETURN_IF_FAILED(_CreateRGB32Frame(pBuf, len, pitch, m_width, m_height, rgbMask, m_frameNumber));
     }
-    else if(m_subType == MFVideoFormat_NV12)
+    else if (m_subType == MFVideoFormat_NV12)
     {
-        DEBUG_MSG(L"NV12 frames %s \n", winrt::to_hstring(MFVideoFormat_NV12).data());
+        RETURN_HR_IF_NULL(E_INVALIDARG, pBuf);
+        RETURN_HR_IF(E_INVALIDARG, pitch <= 0 || (pitch & 1) != 0 || (m_width & 1) != 0 || (m_height & 1) != 0);
+        RETURN_HR_IF(E_INVALIDARG, static_cast<UINT32>(pitch) < m_width);
 
-        DWORD frameBuffLen = m_width * m_height * 4;
-        wil::unique_cotaskmem_ptr<BYTE[]> spBuff = wil::make_unique_cotaskmem_nothrow<BYTE[]>(frameBuffLen);
-        RETURN_IF_NULL_ALLOC(spBuff.get());
+        const ULONGLONG yPlaneSize = static_cast<ULONGLONG>(pitch) * m_height;
+        const ULONGLONG requiredSize = yPlaneSize + yPlaneSize / 2;
+        RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), requiredSize > len);
 
-        RETURN_IF_FAILED(_CreateRGB32Frame(spBuff.get(), frameBuffLen, m_width * 4, m_width, m_height, rgbMask, m_frameNumber));
-        RETURN_IF_FAILED(RGB32ToNV12Frame(spBuff.get(), frameBuffLen, m_width * 4, m_width, m_height, pBuf, len, pitch));
+        const UINT32 offset = m_frameNumber % m_height;
+        for (UINT32 row = 0; row < m_height; ++row)
+        {
+            const BYTE gray = static_cast<BYTE>(row + offset);
+            const ULONG background =
+                ((static_cast<ULONG>(gray) << 16) |
+                    (static_cast<ULONG>(gray) << 8) |
+                    static_cast<ULONG>(gray)) & rgbMask;
+            BYTE yValue = 0;
+            RGB24ToY(
+                static_cast<int>((background >> 16) & 0xFF),
+                static_cast<int>((background >> 8) & 0xFF),
+                static_cast<int>(background & 0xFF),
+                &yValue);
+            std::memset(pBuf + static_cast<size_t>(row) * pitch, yValue, m_width);
+        }
+
+        constexpr DWORD panelLeft = 12;
+        constexpr DWORD panelTop = 12;
+        constexpr DWORD panelWidth = 262;
+        constexpr DWORD panelHeight = 88;
+        if (m_width >= panelLeft + panelWidth && m_height >= panelTop + panelHeight)
+        {
+            for (DWORD row = panelTop; row < panelTop + panelHeight; ++row)
+            {
+                BYTE* luma = pBuf + static_cast<size_t>(row) * pitch;
+                for (DWORD column = panelLeft; column < panelLeft + panelWidth; ++column)
+                {
+                    ULONG overlayColor = 0;
+                    if (GetCounterPixelColor(column, row, m_width, m_height, m_frameNumber, &overlayColor))
+                    {
+                        BYTE yValue = 16;
+                        if (overlayColor != 0)
+                        {
+                            RGB24ToY(255, 255, 255, &yValue);
+                        }
+                        luma[column] = yValue;
+                    }
+                }
+            }
+        }
+
+        BYTE* chromaPlane = pBuf + static_cast<size_t>(yPlaneSize);
+        for (UINT32 row = 0; row < m_height; row += 2)
+        {
+            BYTE* chroma = chromaPlane + static_cast<size_t>(row / 2) * pitch;
+            for (UINT32 column = 0; column < m_width; column += 2)
+            {
+                ULONG color = 0;
+                if (!GetCounterPixelColor(column, row, m_width, m_height, m_frameNumber, &color))
+                {
+                    const BYTE gray = static_cast<BYTE>(row + offset);
+                    color =
+                        ((static_cast<ULONG>(gray) << 16) |
+                            (static_cast<ULONG>(gray) << 8) |
+                            static_cast<ULONG>(gray)) & rgbMask;
+                }
+
+                BYTE unusedY = 0;
+                BYTE u = 128;
+                BYTE v = 128;
+                RGB24ToYUY2(
+                    static_cast<int>((color >> 16) & 0xFF),
+                    static_cast<int>((color >> 8) & 0xFF),
+                    static_cast<int>(color & 0xFF),
+                    &unusedY,
+                    &u,
+                    &v);
+                chroma[column] = u;
+                chroma[column + 1] = v;
+            }
+        }
     }
     else
     {
@@ -198,10 +361,11 @@ HRESULT SimpleFrameGenerator::_CreateRGB32Frame(
     _In_ UINT32 frameNumber )
 {
     RETURN_HR_IF_NULL(E_INVALIDARG, pBuf);
-    if (len < (abs(pitch) * height ))
-    {
-        return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
-    }
+    RETURN_HR_IF(E_INVALIDARG, pitch <= 0);
+    RETURN_HR_IF(E_INVALIDARG, static_cast<ULONGLONG>(pitch) < static_cast<ULONGLONG>(width) * sizeof(uint32_t));
+    RETURN_HR_IF(
+        HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER),
+        static_cast<ULONGLONG>(pitch) * height > len);
 
     const int offset = static_cast<int>(frameNumber % height);
 

@@ -173,7 +173,16 @@ button:disabled { cursor: default; }
 .camera-stage span { max-width: calc(100% - 24px); margin-top: 6px; color: var(--muted); font-size: 0.82rem; text-align: center; }
 .camera-note { min-width: 0; padding: 18px; }
 .camera-note-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.065); color: var(--muted); font-size: 0.82rem; }
-.camera-note-row strong { color: #ccd5dc; font-weight: 550; }
+.camera-note-row strong { color: #ccd5dc; font-weight: 550; text-align: right; }
+.camera-state { padding-left: 9px; color: #85929e; font-weight: 550 !important; }
+.camera-state.running { color: var(--mint) !important; }
+.camera-state.error { color: #ff9b9b !important; }
+.camera-state.starting { color: var(--blue) !important; }
+.camera-stage-ready .camera-status-icon { border-color: rgba(116,227,178,.24); color: var(--mint); background: rgba(116,227,178,.06); }
+.camera-actions-note { padding: 11px 4px 2px; color: var(--muted); font-size: .79rem; line-height: 1.55; }
+.camera-test-instructions { display: grid; gap: 6px; margin-top: 14px; padding: 12px; border: 1px solid rgba(148,202,255,.13); border-radius: 11px; background: rgba(148,202,255,.035); }
+.camera-test-instructions strong { color: #d8e7f3; font-size: .79rem; font-weight: 630; }
+.camera-test-instructions span { color: var(--muted); font-size: .76rem; line-height: 1.55; }
 .settings-panel { overflow: hidden; }
 .setting-row { min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 17px; border-bottom: 1px solid rgba(255,255,255,.06); }
 .setting-row:last-child { border-bottom: 0; }

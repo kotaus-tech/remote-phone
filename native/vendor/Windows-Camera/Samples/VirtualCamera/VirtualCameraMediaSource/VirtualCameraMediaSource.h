@@ -14,10 +14,7 @@ DEFINE_GUID(CLSID_VirtualCameraMediaSource ,
 
 static LPCWSTR VIRTUALCAMERAMEDIASOURCE_CLSID = L"{7B89B92E-FE71-42D0-8A41-E137D06EA184}";
 static LPCWSTR VIRTUALCAMERAMEDIASOURCE_FRIENDLYNAME = L"VirtualCameraMediaSource";
-
-// Early PoC only: a distinct CLSID isolates a temporary HKCU COM registration from an
-// existing machine-wide registration of the Microsoft sample. Setup never registers this CLSID.
-static LPCWSTR VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID = L"{5F94713D-D05B-41E3-AED6-378B3BDE847A}";
+static LPCWSTR VIRTUALCAMERAMEDIASOURCE_BUILD_VERSION = L"0.1.0";
 
 // The below 2 GUIDs are defined in Windows build 22621 and above only, 
 // if targetting SDK for Windows 22621 or higher this would need to be commented out.

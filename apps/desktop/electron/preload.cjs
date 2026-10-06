@@ -13,4 +13,6 @@ contextBridge.exposeInMainWorld('remotePhone', {
   disconnect: () => ipcRenderer.invoke('pairing:disconnect'),
   onDevices: (callback) => subscribe('pairing:devices', callback),
   onStatus: (callback) => subscribe('pairing:status', callback),
+  getCameraStatus: () => ipcRenderer.invoke('camera:get-status'),
+  onCameraStatus: (callback) => subscribe('camera:status', callback),
 });

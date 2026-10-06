@@ -9,11 +9,27 @@ $sourceOut = Join-Path $buildRoot 'sample-out'
 $sourceObj = Join-Path $buildRoot 'sample-obj'
 $hostBuild = Join-Path $buildRoot 'host'
 $runtimeDirectory = Join-Path $repoRoot 'apps\desktop\native-runtime'
+$mediaSourceHeader = Join-Path $vendorRoot 'VirtualCameraMediaSource\VirtualCameraMediaSource.h'
+$installerInclude = Join-Path $repoRoot 'apps\desktop\installer.nsh'
+$desktopPackage = Join-Path $repoRoot 'apps\desktop\package.json'
 
 foreach ($commandName in @('msbuild', 'nuget', 'cmake', 'cargo')) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Не найдена команда $commandName. Установите инструменты сборки Windows C++ и повторите сборку."
     }
+}
+
+$headerText = Get-Content -LiteralPath $mediaSourceHeader -Raw
+$clsidMatch = [regex]::Match($headerText, 'VIRTUALCAMERAMEDIASOURCE_CLSID\s*=\s*L"(?<clsid>\{[0-9A-Fa-f-]+\})"')
+$versionMatch = [regex]::Match($headerText, 'VIRTUALCAMERAMEDIASOURCE_BUILD_VERSION\s*=\s*L"(?<version>[0-9]+\.[0-9]+\.[0-9]+)"')
+if (-not $clsidMatch.Success) { throw 'В VirtualCameraMediaSource.h не найден CLSID установленного источника.' }
+if (-not $versionMatch.Success) { throw 'В VirtualCameraMediaSource.h не найдена версия источника.' }
+$desktopVersion = (Get-Content -LiteralPath $desktopPackage -Raw | ConvertFrom-Json).version
+if ($versionMatch.Groups['version'].Value -ne $desktopVersion) {
+    throw "Версия COM-источника ($($versionMatch.Groups['version'].Value)) не совпадает с версией приложения ($desktopVersion)."
+}
+if (-not (Get-Content -LiteralPath $installerInclude -Raw).Contains($clsidMatch.Groups['clsid'].Value)) {
+    throw "Setup.exe регистрирует не тот CLSID, что native media source: $($clsidMatch.Groups['clsid'].Value)"
 }
 
 New-Item -ItemType Directory -Force -Path $packageDirectory, $buildRoot, $sourceOut, $sourceObj | Out-Null
@@ -31,11 +47,11 @@ Write-Host 'Собирается COM media source Microsoft VirtualCameraMediaSo
     "/p:IntDir=$($sourceObj.TrimEnd('\'))\"
 if ($LASTEXITCODE -ne 0) { throw "Сборка media source завершилась с кодом $LASTEXITCODE." }
 
-Write-Host 'Собирается тестовый host для MFCreateVirtualCamera (x64)…'
+Write-Host 'Собирается управляющий host и Media Foundation smoke test (x64)…'
 & cmake -S (Join-Path $repoRoot 'native\virtual-camera-host') -B $hostBuild -A x64
-if ($LASTEXITCODE -ne 0) { throw "Конфигурация тестового host завершилась с кодом $LASTEXITCODE." }
+if ($LASTEXITCODE -ne 0) { throw "Конфигурация host завершилась с кодом $LASTEXITCODE." }
 & cmake --build $hostBuild --config Release --parallel
-if ($LASTEXITCODE -ne 0) { throw "Сборка тестового host завершилась с кодом $LASTEXITCODE." }
+if ($LASTEXITCODE -ne 0) { throw "Сборка host завершилась с кодом $LASTEXITCODE." }
 
 $mediaSourceDll = Join-Path $sourceOut 'VirtualCameraMediaSource.dll'
 $cameraHost = Join-Path $hostBuild 'Release\RemotePhone.VirtualCameraHost.exe'
@@ -49,32 +65,16 @@ foreach ($artifact in @($mediaSourceDll, $cameraHost, $pairingBridgeDll)) {
     }
 }
 
+if (Test-Path -LiteralPath $runtimeDirectory) {
+    Remove-Item -LiteralPath $runtimeDirectory -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Copy-Item -LiteralPath $mediaSourceDll -Destination (Join-Path $runtimeDirectory 'VirtualCameraMediaSource.dll') -Force
 Copy-Item -LiteralPath $cameraHost -Destination (Join-Path $runtimeDirectory 'RemotePhone.VirtualCameraHost.exe') -Force
 Copy-Item -LiteralPath $pairingBridgeDll -Destination (Join-Path $runtimeDirectory 'remote_phone_pairing_bridge.dll') -Force
-$pocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-poc.ps1'
-$comAuditScript = Join-Path $repoRoot 'scripts\inspect-virtual-camera-com.ps1'
-$isolatedPocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-isolated-poc.ps1'
-$mediaSourceHeader = Join-Path $vendorRoot 'VirtualCameraMediaSource\VirtualCameraMediaSource.h'
-$isolatedClsidPattern = 'VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID\s*=\s*L"(?<clsid>\{[0-9A-Fa-f-]+\})"'
-$isolatedClsidMatch = [regex]::Match((Get-Content -LiteralPath $mediaSourceHeader -Raw), $isolatedClsidPattern)
-if (-not $isolatedClsidMatch.Success) { throw 'В Microsoft source не найден ожидаемый CLSID изолированного PoC.' }
-$isolatedClsid = $isolatedClsidMatch.Groups['clsid'].Value
-if (-not (Get-Content -LiteralPath $isolatedPocScript -Raw).Contains($isolatedClsid)) {
-    throw "CLSID изолированного PowerShell-сценария не совпадает с Microsoft source: $isolatedClsid"
+
+$unexpectedScripts = Get-ChildItem -LiteralPath $runtimeDirectory -Filter '*.ps1' -Recurse
+if ($unexpectedScripts.Count -ne 0) {
+    throw 'В native-runtime не должны попадать PowerShell-сценарии.'
 }
-foreach ($scriptPath in @($pocScript, $comAuditScript, $isolatedPocScript)) {
-    try {
-        $null = [scriptblock]::Create((Get-Content -LiteralPath $scriptPath -Raw))
-    } catch {
-        throw "Сценарий PowerShell '$scriptPath' содержит синтаксическую ошибку: $($_.Exception.Message)"
-    }
-}
-Copy-Item -LiteralPath $pocScript `
-    -Destination (Join-Path $runtimeDirectory 'Run-VirtualCameraPoC.ps1') -Force
-Copy-Item -LiteralPath $comAuditScript `
-    -Destination (Join-Path $runtimeDirectory 'Inspect-VirtualCameraCom.ps1') -Force
-Copy-Item -LiteralPath $isolatedPocScript `
-    -Destination (Join-Path $runtimeDirectory 'Run-IsolatedVirtualCameraPoC.ps1') -Force
-Write-Host 'Нативные x64-компоненты, сценарии PoC и read-only аудит COM-регистрации готовы для включения в Setup.exe.'
+Write-Host "Нативные x64-компоненты версии $desktopVersion готовы для включения только в Setup.exe."

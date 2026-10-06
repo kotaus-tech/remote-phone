@@ -18,6 +18,9 @@ target_include_directories(RemotePhone.VirtualCameraHost PRIVATE
 target_link_libraries(RemotePhone.VirtualCameraHost PRIVATE
     mfsensorgroup
     mfplat
+    mfreadwrite
     mfuuid
     ole32
+    shell32
+    uuid
 )

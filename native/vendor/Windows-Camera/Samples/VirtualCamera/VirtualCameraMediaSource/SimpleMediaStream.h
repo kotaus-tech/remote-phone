@@ -73,6 +73,7 @@ namespace winrt::WindowsSample::implementation
         ULONGLONG m_requestWindowSampleCount = 0;
         ULONGLONG m_minRequestInterval = 0;
         ULONGLONG m_maxRequestInterval = 0;
+        ULONGLONG m_sampleDuration100ns = 333333;
 
         bool m_bIsShutdown = false;
         bool m_bSelected = false;

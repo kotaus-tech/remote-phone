@@ -18,11 +18,13 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
+        g_hInst = hModule;
+        DisableThreadLibraryCalls(hModule);
+        break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
-        break;
     case DLL_PROCESS_DETACH:
-        g_hInst = hModule;
+        break;
     }
     return TRUE;
 }
@@ -57,17 +59,9 @@ HRESULT __stdcall DllGetClassObject(GUID const& clsid, GUID const& iid, void** r
     {
         *result = nullptr;
 
-        GUID isolatedDiagnosticClsid = {};
-        const HRESULT isolatedClsidParseResult = CLSIDFromString(
-            VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID,
-            &isolatedDiagnosticClsid);
         const bool isSampleClsid = clsid == __uuidof(winrt::WindowsSample::implementation::VirtualCameraMediaSourceActivate);
-        const bool isIsolatedDiagnosticClsid = SUCCEEDED(isolatedClsidParseResult) &&
-            IsEqualGUID(clsid, isolatedDiagnosticClsid);
-        if (isSampleClsid || isIsolatedDiagnosticClsid)
+        if (isSampleClsid)
         {
-            // The diagnostic alias intentionally resolves to the same Microsoft sample factory.
-            // It is accepted only to let the early PoC register a separate temporary CLSID in HKCU.
             return winrt::make_self<VirtualCameraMediaSourceActivateFactory>()->QueryInterface(iid, result);
         }
 
