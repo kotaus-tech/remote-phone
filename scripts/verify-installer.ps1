@@ -128,9 +128,21 @@ try {
     else {
         $logLengthBeforeSmoke = (Get-Item -LiteralPath $logPath).Length
         Write-Host 'Запуск Media Foundation smoke test: проверка типов NV12/RGB32 и захват кадров 1080p60…'
-        $smoke = Start-Process -FilePath $installedHost -ArgumentList '--ci-smoke' -Wait -PassThru -NoNewWindow
-        if ($smoke.ExitCode -ne 0) {
-            throw "Media Foundation smoke test завершился с кодом $($smoke.ExitCode)."
+        $smokeOutput = & $installedHost '--ci-smoke' 2>&1
+        $smokeExitCode = $LASTEXITCODE
+        $smokeOutput | ForEach-Object { Write-Host $_ }
+        if ($smokeExitCode -ne 0) {
+            $failureLines = @($smokeOutput | ForEach-Object { [string] $_ })
+            if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                $failureLines += @(Get-Content -LiteralPath $logPath -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
+            $failureDetails = @($failureLines | Where-Object { $_ -match '(?i)CI_CAMERA|error|failed|HRESULT|код 0x' } | Select-Object -Last 20)
+            if ($failureDetails.Count -eq 0) { $failureDetails = @($failureLines | Select-Object -Last 20) }
+            $failureMessage = ($failureDetails -join ' | ')
+            if ($failureMessage.Length -gt 3500) { $failureMessage = $failureMessage.Substring($failureMessage.Length - 3500) }
+            $escapedFailureMessage = $failureMessage.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Media Foundation camera smoke::$escapedFailureMessage"
+            throw "Media Foundation smoke test завершился с кодом $smokeExitCode."
         }
         if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
             throw "Источник не создал журнал в ProgramData: $logPath"
