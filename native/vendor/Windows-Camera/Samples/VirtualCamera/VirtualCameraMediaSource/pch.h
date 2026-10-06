@@ -24,6 +24,8 @@
 #include <d3d9types.h>
 
 #include <mfvirtualcamera.h>
+#include <strsafe.h>
+#include <string>
 
 #define RESULT_DIAGNOSTICS_LEVEL 4 // include function name
 
@@ -67,6 +69,88 @@ inline void DebugPrint(LPCWSTR szFormat, ...)
     DebugPrint(msg, __VA_ARGS__);\
     DebugPrint(L"\n");\
 }\
+
+inline void WriteMediaSourceDiagnostic(_In_opt_z_ PCWSTR path, _In_z_ PCWSTR format, ...)
+{
+    WCHAR message[768] = {};
+    va_list args;
+    va_start(args, format);
+    StringCbVPrintfW(message, sizeof(message), format, args);
+    va_end(args);
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    WCHAR record[1024] = {};
+    StringCbPrintfW(
+        record,
+        sizeof(record),
+        L"[%04u-%02u-%02uT%02u:%02u:%02u.%03u] %s\r\n",
+        static_cast<unsigned>(now.wYear),
+        static_cast<unsigned>(now.wMonth),
+        static_cast<unsigned>(now.wDay),
+        static_cast<unsigned>(now.wHour),
+        static_cast<unsigned>(now.wMinute),
+        static_cast<unsigned>(now.wSecond),
+        static_cast<unsigned>(now.wMilliseconds),
+        message);
+    OutputDebugStringW(record);
+
+    if (path == nullptr || path[0] == L'\0')
+    {
+        return;
+    }
+
+    HANDLE file = CreateFileW(
+        path,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return;
+    }
+
+    const int characterCount = lstrlenW(record);
+    const int byteCount = WideCharToMultiByte(CP_UTF8, 0, record, characterCount, nullptr, 0, nullptr, nullptr);
+    if (byteCount > 0 && byteCount <= 4096)
+    {
+        char utf8[4096] = {};
+        const int converted = WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            record,
+            characterCount,
+            utf8,
+            byteCount,
+            nullptr,
+            nullptr);
+        if (converted == byteCount)
+        {
+            DWORD bytesWritten = 0;
+            if (WriteFile(file, utf8, static_cast<DWORD>(byteCount), &bytesWritten, nullptr) && bytesWritten == static_cast<DWORD>(byteCount))
+            {
+                FlushFileBuffers(file);
+            }
+        }
+    }
+    CloseHandle(file);
+}
+
+inline HRESULT LogMediaSourceHRESULT(_In_opt_z_ PCWSTR path, _In_z_ PCWSTR stage, HRESULT result)
+{
+    if (FAILED(result))
+    {
+        WriteMediaSourceDiagnostic(
+            path,
+            L"media_source_error stage=%s hresult=0x%08X",
+            stage,
+            static_cast<unsigned>(result));
+    }
+    return result;
+}
 
 namespace wilEx
 {

@@ -5,6 +5,8 @@
 #ifndef SIMPLEMEDIASOURCE_H
 #define SIMPLEMEDIASOURCE_H
 
+#include <string>
+
 namespace winrt::WindowsSample::implementation
 {
     // forward declaration
@@ -89,6 +91,7 @@ namespace winrt::WindowsSample::implementation
         wil::com_ptr_nothrow<IMFMediaEventQueue> m_spEventQueue;
         wil::com_ptr_nothrow<IMFPresentationDescriptor> m_spPresentationDescriptor;
         wil::com_ptr_nothrow<IMFAttributes> m_spAttributes;
+        std::wstring m_diagnosticLogPath;
         wil::unique_cotaskmem_array_ptr<wil::com_ptr_nothrow<SimpleMediaStream>> m_streamList;
 
         const DWORD NUM_STREAMS = 1;

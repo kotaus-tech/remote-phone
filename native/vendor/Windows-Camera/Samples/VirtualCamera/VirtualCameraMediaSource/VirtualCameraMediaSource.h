@@ -37,6 +37,11 @@ DEFINE_GUID(VCAM_DEVICE_INFO,
 DEFINE_GUID(VCAM_KIND,
     0xc7f7c57b, 0xdf30, 0x41d0, 0xaf, 0xfc, 0x15, 0x20, 0x1c, 0xdf, 0x92, 0xd);
 
+// {E57D6C8A-F640-4898-9E49-3558A89FEF2C}
+// Optional path used by the early PoC to collect media-source diagnostics.
+DEFINE_GUID(VCAM_DIAGNOSTIC_LOG_PATH,
+    0xe57d6c8a, 0xf640, 0x4898, 0x9e, 0x49, 0x35, 0x58, 0xa8, 0x9f, 0xef, 0x2c);
+
 // <-- VirtualCameraMediaSource activation attributes
 
 // Example Custom Property implemented by SimpleMediaSource

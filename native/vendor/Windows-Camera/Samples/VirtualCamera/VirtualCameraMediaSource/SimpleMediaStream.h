@@ -5,6 +5,8 @@
 #ifndef SIMPLEMEDIASTREAM_H
 #define SIMPLEMEDIASTREAM_H
 
+#include <string>
+
 #include "SimpleMediaSource.h"
 #include "VirtualCameraMediaSource.h"
 
@@ -31,7 +33,11 @@ namespace winrt::WindowsSample::implementation
         IFACEMETHODIMP GetStreamState(_Out_ MF_STREAM_STATE* pState) override;
 
         // Non-interface methods.
-        HRESULT Initialize(_In_ SimpleMediaSource* pSource, _In_ DWORD streamId, _In_ MFSampleAllocatorUsage allocatorUsage);
+        HRESULT Initialize(
+            _In_ SimpleMediaSource* pSource,
+            _In_ DWORD streamId,
+            _In_ MFSampleAllocatorUsage allocatorUsage,
+            _In_opt_z_ PCWSTR diagnosticLogPath);
         HRESULT Start(_In_ IMFMediaType* pMediaType);
         HRESULT Stop(_In_ bool fSendEvent);
         HRESULT Shutdown();
@@ -61,6 +67,12 @@ namespace winrt::WindowsSample::implementation
         wil::com_ptr_nothrow<IMFVideoSampleAllocator> m_spSampleAllocator;
         wistd::unique_ptr<SimpleFrameGenerator> m_spFrameGenerator;
         wil::com_ptr_nothrow<IMFMediaType> m_spMediaType;
+        std::wstring m_diagnosticLogPath;
+        ULONGLONG m_requestWindowStart = 0;
+        ULONGLONG m_lastRequestTime = 0;
+        ULONGLONG m_requestWindowSampleCount = 0;
+        ULONGLONG m_minRequestInterval = 0;
+        ULONGLONG m_maxRequestInterval = 0;
 
         bool m_bIsShutdown = false;
         bool m_bSelected = false;

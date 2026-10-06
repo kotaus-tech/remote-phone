@@ -24,6 +24,18 @@ namespace winrt::WindowsSample::implementation
             {
                 DEBUG_MSG(L"Set VirtualCameraKind: %i", vCamKind);
             }
+            wil::unique_cotaskmem_string diagnosticLogPath;
+            UINT32 diagnosticLogPathLength = 0;
+            if (SUCCEEDED(m_spActivateAttributes->GetAllocatedString(
+                VCAM_DIAGNOSTIC_LOG_PATH,
+                &diagnosticLogPath,
+                &diagnosticLogPathLength)))
+            {
+                WriteMediaSourceDiagnostic(
+                    diagnosticLogPath.get(),
+                    L"media_source_activate virtual_camera_kind=%u",
+                    static_cast<unsigned>(vCamKind));
+            }
             if (SUCCEEDED(m_spActivateAttributes->GetUnknown(MF_VIRTUALCAMERA_ASSOCIATED_CAMERA_SOURCES, IID_PPV_ARGS(&spCollection))))
             {
                 DEBUG_MSG(L"Initialize using the MF_VIRTUALCAMERA_ASSOCIATED_CAMERA_SOURCES");

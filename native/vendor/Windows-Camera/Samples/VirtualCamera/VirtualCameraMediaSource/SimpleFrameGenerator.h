@@ -34,10 +34,12 @@ private:
         _In_ LONG pitch,
         _In_ DWORD width,
         _In_ DWORD height,
-        _In_ ULONG rgbMask);
+        _In_ ULONG rgbMask,
+        _In_ UINT32 frameNumber);
 
     UINT32 m_width = 0;
     UINT32 m_height = 0;
+    UINT32 m_frameNumber = 0;
     GUID m_subType = GUID_NULL;
 
 };

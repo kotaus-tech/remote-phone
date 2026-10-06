@@ -15,7 +15,8 @@ namespace winrt::WindowsSample::implementation
     HRESULT SimpleMediaStream::Initialize(
             _In_ SimpleMediaSource* pSource,
             _In_ DWORD dwStreamId,
-            _In_ MFSampleAllocatorUsage allocatorUsage
+            _In_ MFSampleAllocatorUsage allocatorUsage,
+            _In_opt_z_ PCWSTR diagnosticLogPath
         )
     {
         winrt::slim_lock_guard lock(m_Lock);
@@ -28,6 +29,7 @@ namespace winrt::WindowsSample::implementation
 
         m_dwStreamId = dwStreamId;
         m_allocatorUsage = allocatorUsage;
+        m_diagnosticLogPath = diagnosticLogPath == nullptr ? L"" : diagnosticLogPath;
 
         const uint32_t NUM_MEDIATYPES = 2;
         wil::unique_cotaskmem_array_ptr<wil::com_ptr_nothrow<IMFMediaType>> mediaTypeList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<IMFMediaType>>(NUM_MEDIATYPES);
@@ -193,37 +195,97 @@ namespace winrt::WindowsSample::implementation
         BYTE* pbuf = nullptr;
         wil::com_ptr_nothrow<IMF2DBuffer2> buffer2D;
 
-        RETURN_IF_FAILED(_CheckShutdownRequiresLock());
+        RETURN_IF_FAILED(LogMediaSourceHRESULT(
+            m_diagnosticLogPath.c_str(),
+            L"RequestSample shutdown check",
+            _CheckShutdownRequiresLock()));
 
         if (m_streamState != MF_STREAM_STATE_RUNNING)
         {
-            RETURN_HR_MSG(MF_E_INVALIDREQUEST, "Stream is not in running state, state:%d, selected: %d", m_streamState, m_bSelected);
+            WriteMediaSourceDiagnostic(
+                m_diagnosticLogPath.c_str(),
+                L"media_source_error stage=RequestSample state=%u selected=%u hresult=0x%08X",
+                static_cast<unsigned>(m_streamState),
+                static_cast<unsigned>(m_bSelected),
+                static_cast<unsigned>(MF_E_INVALIDREQUEST));
+            return MF_E_INVALIDREQUEST;
         }
 
-        RETURN_IF_FAILED(m_spSampleAllocator->AllocateSample(&sample));
-        RETURN_IF_FAILED(sample->GetBufferByIndex(0, &outputBuffer));
-        RETURN_IF_FAILED(outputBuffer->QueryInterface(IID_PPV_ARGS(&buffer2D)));
-        RETURN_IF_FAILED(buffer2D->Lock2DSize(MF2DBuffer_LockFlags_Write,
+        const ULONGLONG requestTime = static_cast<ULONGLONG>(MFGetSystemTime());
+        if (m_requestWindowSampleCount == 0)
+        {
+            m_requestWindowStart = requestTime;
+            m_requestWindowSampleCount = 1;
+            m_minRequestInterval = 0;
+            m_maxRequestInterval = 0;
+        }
+        else
+        {
+            if (requestTime > m_lastRequestTime)
+            {
+                const ULONGLONG interval = requestTime - m_lastRequestTime;
+                if (m_minRequestInterval == 0 || interval < m_minRequestInterval)
+                {
+                    m_minRequestInterval = interval;
+                }
+                if (interval > m_maxRequestInterval)
+                {
+                    m_maxRequestInterval = interval;
+                }
+            }
+            ++m_requestWindowSampleCount;
+
+            const ULONGLONG elapsed = requestTime - m_requestWindowStart;
+            if (elapsed >= 10000000ULL && m_requestWindowSampleCount > 1)
+            {
+                const ULONGLONG intervals = m_requestWindowSampleCount - 1;
+                const ULONGLONG rateTenths = (intervals * 100000000ULL) / elapsed;
+                const ULONGLONG averageIntervalUs = (elapsed / intervals) / 10ULL;
+                WriteMediaSourceDiagnostic(
+                    m_diagnosticLogPath.c_str(),
+                    L"request_sample_cadence request_rate_fps=%I64u.%I64u intervals=%I64u average_interval_us=%I64u min_interval_us=%I64u max_interval_us=%I64u",
+                    static_cast<unsigned long long>(rateTenths / 10ULL),
+                    static_cast<unsigned long long>(rateTenths % 10ULL),
+                    static_cast<unsigned long long>(intervals),
+                    static_cast<unsigned long long>(averageIntervalUs),
+                    static_cast<unsigned long long>(m_minRequestInterval / 10ULL),
+                    static_cast<unsigned long long>(m_maxRequestInterval / 10ULL));
+
+                m_requestWindowStart = requestTime;
+                m_requestWindowSampleCount = 1;
+                m_minRequestInterval = 0;
+                m_maxRequestInterval = 0;
+            }
+        }
+        m_lastRequestTime = requestTime;
+
+        const auto logFailure = [this](PCWSTR stage, HRESULT result)
+        {
+            return LogMediaSourceHRESULT(m_diagnosticLogPath.c_str(), stage, result);
+        };
+        RETURN_IF_FAILED(logFailure(L"AllocateSample", m_spSampleAllocator->AllocateSample(&sample)));
+        RETURN_IF_FAILED(logFailure(L"GetBufferByIndex", sample->GetBufferByIndex(0, &outputBuffer)));
+        RETURN_IF_FAILED(logFailure(L"QueryInterface(IMF2DBuffer2)", outputBuffer->QueryInterface(IID_PPV_ARGS(&buffer2D))));
+        RETURN_IF_FAILED(logFailure(L"Lock2DSize", buffer2D->Lock2DSize(MF2DBuffer_LockFlags_Write,
             &pbuf,
             &pitch,
             &bufferStart,
-            &bufferLength));
-        
+            &bufferLength)));
 
-        RETURN_IF_FAILED(m_spFrameGenerator->CreateFrame(pbuf, bufferLength, pitch, m_rgbMask));
+        RETURN_IF_FAILED(logFailure(L"CreateFrame", m_spFrameGenerator->CreateFrame(pbuf, bufferLength, pitch, m_rgbMask)));
         //RETURN_IF_FAILED(WriteSampleData(pbuf, bufferLength, pitch, NUM_IMAGE_COLS, NUM_IMAGE_ROWS));
-        RETURN_IF_FAILED(buffer2D->Unlock2D());
+        RETURN_IF_FAILED(logFailure(L"Unlock2D", buffer2D->Unlock2D()));
 
-        RETURN_IF_FAILED(sample->SetSampleTime(MFGetSystemTime()));
-        RETURN_IF_FAILED(sample->SetSampleDuration(333333));
+        RETURN_IF_FAILED(logFailure(L"SetSampleTime", sample->SetSampleTime(MFGetSystemTime())));
+        RETURN_IF_FAILED(logFailure(L"SetSampleDuration", sample->SetSampleDuration(333333)));
         if (pToken != nullptr)
         {
-            RETURN_IF_FAILED(sample->SetUnknown(MFSampleExtension_Token, pToken));
+            RETURN_IF_FAILED(logFailure(L"SetSampleToken", sample->SetUnknown(MFSampleExtension_Token, pToken)));
         }
-        RETURN_IF_FAILED(m_spEventQueue->QueueEventParamUnk(MEMediaSample,
+        RETURN_IF_FAILED(logFailure(L"QueueSample", m_spEventQueue->QueueEventParamUnk(MEMediaSample,
             GUID_NULL,
             S_OK,
-            sample.get()));
+            sample.get())));
 
         return S_OK;
     }
@@ -296,7 +358,49 @@ namespace winrt::WindowsSample::implementation
         m_bSelected = true;
 
         // Change Stream state to running.
-        RETURN_IF_FAILED(StartInternal(true, pMediaType));
+        const HRESULT startResult = StartInternal(true, pMediaType);
+        if (FAILED(startResult))
+        {
+            WriteMediaSourceDiagnostic(
+                m_diagnosticLogPath.c_str(),
+                L"media_source_error stage=StartInternal hresult=0x%08X",
+                static_cast<unsigned>(startResult));
+            return startResult;
+        }
+
+        m_requestWindowStart = 0;
+        m_lastRequestTime = 0;
+        m_requestWindowSampleCount = 0;
+        m_minRequestInterval = 0;
+        m_maxRequestInterval = 0;
+
+        GUID subtype = GUID_NULL;
+        UINT32 width = 0;
+        UINT32 height = 0;
+        UINT32 frameRateNumerator = 0;
+        UINT32 frameRateDenominator = 0;
+        (void)m_spMediaType->GetGUID(MF_MT_SUBTYPE, &subtype);
+        (void)MFGetAttributeSize(m_spMediaType.get(), MF_MT_FRAME_SIZE, &width, &height);
+        (void)MFGetAttributeRatio(
+            m_spMediaType.get(),
+            MF_MT_FRAME_RATE,
+            &frameRateNumerator,
+            &frameRateDenominator);
+        WCHAR subtypeGuid[64] = {};
+        StringFromGUID2(subtype, subtypeGuid, ARRAYSIZE(subtypeGuid));
+        PCWSTR subtypeName = IsEqualGUID(subtype, MFVideoFormat_NV12)
+            ? L"NV12"
+            : (IsEqualGUID(subtype, MFVideoFormat_RGB32) ? L"RGB32" : L"other");
+        WriteMediaSourceDiagnostic(
+            m_diagnosticLogPath.c_str(),
+            L"selected_media_type stream_id=%u subtype=%s subtype_guid=%s frame_size=%ux%u frame_rate=%u/%u sample_duration_100ns=333333",
+            static_cast<unsigned>(m_dwStreamId),
+            subtypeName,
+            subtypeGuid,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            static_cast<unsigned>(frameRateNumerator),
+            static_cast<unsigned>(frameRateDenominator));
 
         return S_OK;
     }
@@ -454,6 +558,28 @@ namespace winrt::WindowsSample::implementation
     _Requires_lock_held_(m_Lock)
     HRESULT SimpleMediaStream::StopInternal(bool bSendEvent)
     {
+        if (m_requestWindowSampleCount > 1 && m_lastRequestTime > m_requestWindowStart)
+        {
+            const ULONGLONG intervals = m_requestWindowSampleCount - 1;
+            const ULONGLONG elapsed = m_lastRequestTime - m_requestWindowStart;
+            const ULONGLONG rateTenths = (intervals * 100000000ULL) / elapsed;
+            const ULONGLONG averageIntervalUs = (elapsed / intervals) / 10ULL;
+            WriteMediaSourceDiagnostic(
+                m_diagnosticLogPath.c_str(),
+                L"request_sample_cadence final=1 request_rate_fps=%I64u.%I64u intervals=%I64u average_interval_us=%I64u min_interval_us=%I64u max_interval_us=%I64u",
+                static_cast<unsigned long long>(rateTenths / 10ULL),
+                static_cast<unsigned long long>(rateTenths % 10ULL),
+                static_cast<unsigned long long>(intervals),
+                static_cast<unsigned long long>(averageIntervalUs),
+                static_cast<unsigned long long>(m_minRequestInterval / 10ULL),
+                static_cast<unsigned long long>(m_maxRequestInterval / 10ULL));
+        }
+        WriteMediaSourceDiagnostic(
+            m_diagnosticLogPath.c_str(),
+            L"stream_stopped stream_id=%u window_samples=%I64u",
+            static_cast<unsigned>(m_dwStreamId),
+            static_cast<unsigned long long>(m_requestWindowSampleCount));
+
         // Set stream state
         m_streamState = MF_STREAM_STATE_STOPPED;
 

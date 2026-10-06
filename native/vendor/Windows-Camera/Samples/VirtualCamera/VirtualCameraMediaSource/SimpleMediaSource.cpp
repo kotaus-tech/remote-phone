@@ -22,6 +22,20 @@ namespace winrt::WindowsSample::implementation
         }
 
         RETURN_IF_FAILED(_CreateSourceAttributes(pAttributes));
+
+        wil::unique_cotaskmem_string allocatedDiagnosticLogPath;
+        UINT32 diagnosticLogPathLength = 0;
+        if (SUCCEEDED(m_spAttributes->GetAllocatedString(
+            VCAM_DIAGNOSTIC_LOG_PATH,
+            &allocatedDiagnosticLogPath,
+            &diagnosticLogPathLength)))
+        {
+            m_diagnosticLogPath.assign(allocatedDiagnosticLogPath.get());
+        }
+        WriteMediaSourceDiagnostic(
+            m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str(),
+            L"media_source_initialized");
+
         RETURN_IF_FAILED(MFCreateEventQueue(&m_spEventQueue));
 
         m_streamList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<SimpleMediaStream>>(NUM_STREAMS);
@@ -35,7 +49,11 @@ namespace winrt::WindowsSample::implementation
         {
             auto ptr = winrt::make_self<SimpleMediaStream>();
             m_streamList[i] = ptr.detach();
-            RETURN_IF_FAILED(m_streamList[i]->Initialize(this, i, MFSampleAllocatorUsage_UsesProvidedAllocator));
+            RETURN_IF_FAILED(m_streamList[i]->Initialize(
+                this,
+                i,
+                MFSampleAllocatorUsage_UsesProvidedAllocator,
+                m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str()));
 
             RETURN_IF_FAILED(m_streamList[i]->GetStreamDescriptor(&streamDescriptorList[i]));
         }
@@ -237,7 +255,10 @@ namespace winrt::WindowsSample::implementation
                 wil::com_ptr_nothrow<IMFMediaTypeHandler> spMTHandler;
                 wil::com_ptr_nothrow<IMFMediaType> spMediaType;
                 RETURN_IF_FAILED(streamDesc->GetMediaTypeHandler(&spMTHandler));
-                RETURN_IF_FAILED(spMTHandler->GetCurrentMediaType(&spMediaType));
+                RETURN_IF_FAILED(LogMediaSourceHRESULT(
+                    m_diagnosticLogPath.c_str(),
+                    L"GetCurrentMediaType",
+                    spMTHandler->GetCurrentMediaType(&spMediaType)));
 
                 // Send the MEUpdatedStream/MENewStream to our source event queue.
                 wil::com_ptr_nothrow<IUnknown> spunkStream;
@@ -250,7 +271,10 @@ namespace winrt::WindowsSample::implementation
                     spunkStream.get()));
 
                 // Start Stream will send MEStreamStart event
-                RETURN_IF_FAILED(m_streamList[streamIdx]->Start(spMediaType.get()));
+                RETURN_IF_FAILED(LogMediaSourceHRESULT(
+                    m_diagnosticLogPath.c_str(),
+                    L"SimpleMediaStream::Start",
+                    m_streamList[streamIdx]->Start(spMediaType.get())));
             }
             else if(wasSelected)
             {

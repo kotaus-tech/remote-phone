@@ -30,6 +30,29 @@ if (-not (Test-Path -LiteralPath $dllPath)) {
     throw 'DLL источника видеокадров не найдена рядом с тестовой программой.'
 }
 
+$diagnosticEnvironmentVariable = 'REMOTE_PHONE_VCAM_DIAGNOSTIC_LOG_PATH'
+$previousDiagnosticLogPath = [Environment]::GetEnvironmentVariable($diagnosticEnvironmentVariable, 'Process')
+$diagnosticLogPath = Join-Path ([IO.Path]::GetTempPath()) ("RemotePhoneVirtualCamera-{0}.log" -f [guid]::NewGuid().ToString('N'))
+try {
+    $diagnosticHeader = "poc_started={0:O}`r`n" -f [DateTime]::Now
+    [IO.File]::WriteAllText($diagnosticLogPath, $diagnosticHeader, [Text.UTF8Encoding]::new($false))
+    $diagnosticAcl = Get-Acl -LiteralPath $diagnosticLogPath
+    foreach ($serviceSid in @('S-1-5-11', 'S-1-5-19', 'S-1-5-20')) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($serviceSid)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::AppendData,
+            [Security.AccessControl.AccessControlType]::Allow)
+        [void]$diagnosticAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $diagnosticLogPath -AclObject $diagnosticAcl
+    [Environment]::SetEnvironmentVariable($diagnosticEnvironmentVariable, $diagnosticLogPath, 'Process')
+}
+catch {
+    Remove-Item -LiteralPath $diagnosticLogPath -Force -ErrorAction SilentlyContinue
+    throw
+}
+
 $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
     [Microsoft.Win32.RegistryHive]::CurrentUser,
     [Microsoft.Win32.RegistryView]::Registry64)
@@ -60,7 +83,8 @@ try {
     $serverKey = $null
 
     Write-Host 'Временная COM-запись создана только для текущего пользователя (HKCU); системный реестр не изменяется.'
-    Write-Host 'Откройте «Камера» Windows, Chrome, Edge или OBS и проверьте тестовый движущийся кадр.'
+    Write-Host 'В тестовом кадре шестизначный счётчик увеличивается на каждый сформированный кадр.'
+    Write-Host 'Проверьте браузер и Discord; после теста скрипт покажет выбранный формат и фактическую частоту RequestSample.'
     Write-Host 'Нажмите Enter здесь, чтобы остановить и удалить тестовую камеру.'
     & $hostPath
     if ($LASTEXITCODE -ne 0) {
@@ -75,4 +99,24 @@ finally {
         Write-Host 'Временная COM-запись текущего пользователя удалена из HKCU.'
     }
     $registry.Dispose()
+
+    [Environment]::SetEnvironmentVariable($diagnosticEnvironmentVariable, $previousDiagnosticLogPath, 'Process')
+    if (Test-Path -LiteralPath $diagnosticLogPath) {
+        try {
+            Write-Host 'Журнал выбранного media type и RequestSample (после вывода временный файл будет удалён):'
+            $diagnosticText = Get-Content -LiteralPath $diagnosticLogPath -Raw -Encoding UTF8
+            if ([string]::IsNullOrWhiteSpace($diagnosticText)) {
+                Write-Host 'Записей нет: источник мог не запуститься или процесс Frame Server не смог записать журнал.'
+            }
+            else {
+                Write-Host $diagnosticText
+            }
+        }
+        catch {
+            Write-Warning "Не удалось прочитать журнал диагностики: $($_.Exception.Message)"
+        }
+        finally {
+            Remove-Item -LiteralPath $diagnosticLogPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }

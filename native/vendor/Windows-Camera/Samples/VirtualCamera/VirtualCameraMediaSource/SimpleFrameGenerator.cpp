@@ -3,6 +3,133 @@
 //
 #include "pch.h"
 
+namespace
+{
+    void FillRectangle(
+        BYTE* pixels,
+        LONG pitch,
+        DWORD width,
+        DWORD height,
+        DWORD left,
+        DWORD top,
+        DWORD rectangleWidth,
+        DWORD rectangleHeight,
+        uint32_t color)
+    {
+        if (left >= width || top >= height)
+        {
+            return;
+        }
+        if (rectangleWidth > width - left)
+        {
+            rectangleWidth = width - left;
+        }
+        if (rectangleHeight > height - top)
+        {
+            rectangleHeight = height - top;
+        }
+
+        for (DWORD row = top; row < top + rectangleHeight; ++row)
+        {
+            auto line = reinterpret_cast<uint32_t*>(pixels + row * pitch) + left;
+            for (DWORD column = 0; column < rectangleWidth; ++column)
+            {
+                line[column] = color;
+            }
+        }
+    }
+
+    void DrawFrameCounter(
+        BYTE* pixels,
+        LONG pitch,
+        DWORD width,
+        DWORD height,
+        ULONG rgbMask,
+        UINT32 frameNumber)
+    {
+        constexpr DWORD kDigitCount = 6;
+        constexpr DWORD kDigitWidth = 36;
+        constexpr DWORD kDigitHeight = 72;
+        constexpr DWORD kSegmentThickness = 8;
+        constexpr DWORD kDigitGap = 6;
+        constexpr DWORD kPadding = 8;
+        constexpr DWORD kPanelLeft = 12;
+        constexpr DWORD kPanelTop = 12;
+        constexpr DWORD kPanelWidth = kPadding * 2 + kDigitCount * kDigitWidth + (kDigitCount - 1) * kDigitGap;
+        constexpr DWORD kPanelHeight = kPadding * 2 + kDigitHeight;
+
+        if (width < kPanelLeft + kPanelWidth || height < kPanelTop + kPanelHeight)
+        {
+            return;
+        }
+
+        constexpr BYTE kTop = 1 << 0;
+        constexpr BYTE kUpperRight = 1 << 1;
+        constexpr BYTE kLowerRight = 1 << 2;
+        constexpr BYTE kBottom = 1 << 3;
+        constexpr BYTE kLowerLeft = 1 << 4;
+        constexpr BYTE kUpperLeft = 1 << 5;
+        constexpr BYTE kMiddle = 1 << 6;
+        constexpr BYTE kDigitSegments[10] =
+        {
+            kTop | kUpperRight | kLowerRight | kBottom | kLowerLeft | kUpperLeft,
+            kUpperRight | kLowerRight,
+            kTop | kUpperRight | kMiddle | kLowerLeft | kBottom,
+            kTop | kUpperRight | kMiddle | kLowerRight | kBottom,
+            kUpperLeft | kMiddle | kUpperRight | kLowerRight,
+            kTop | kUpperLeft | kMiddle | kLowerRight | kBottom,
+            kTop | kUpperLeft | kMiddle | kLowerRight | kBottom | kLowerLeft,
+            kTop | kUpperRight | kLowerRight,
+            kTop | kUpperRight | kLowerRight | kBottom | kLowerLeft | kUpperLeft | kMiddle,
+            kTop | kUpperRight | kLowerRight | kBottom | kUpperLeft | kMiddle
+        };
+        constexpr DWORD kDivisors[kDigitCount] = { 100000, 10000, 1000, 100, 10, 1 };
+
+        FillRectangle(pixels, pitch, width, height, kPanelLeft, kPanelTop, kPanelWidth, kPanelHeight, 0);
+        const uint32_t foreground = static_cast<uint32_t>(rgbMask) & 0x00FFFFFF;
+
+        for (DWORD index = 0; index < kDigitCount; ++index)
+        {
+            const DWORD digit = (frameNumber % 1000000U / kDivisors[index]) % 10U;
+            const BYTE segments = kDigitSegments[digit];
+            const DWORD left = kPanelLeft + kPadding + index * (kDigitWidth + kDigitGap);
+            const DWORD top = kPanelTop + kPadding;
+            const DWORD halfHeight = kDigitHeight / 2;
+            const DWORD horizontalWidth = kDigitWidth - 2 * kSegmentThickness;
+            const DWORD verticalHeight = halfHeight - kSegmentThickness;
+
+            if (segments & kTop)
+            {
+                FillRectangle(pixels, pitch, width, height, left + kSegmentThickness, top, horizontalWidth, kSegmentThickness, foreground);
+            }
+            if (segments & kUpperRight)
+            {
+                FillRectangle(pixels, pitch, width, height, left + kDigitWidth - kSegmentThickness, top + kSegmentThickness, kSegmentThickness, verticalHeight, foreground);
+            }
+            if (segments & kLowerRight)
+            {
+                FillRectangle(pixels, pitch, width, height, left + kDigitWidth - kSegmentThickness, top + halfHeight, kSegmentThickness, verticalHeight, foreground);
+            }
+            if (segments & kBottom)
+            {
+                FillRectangle(pixels, pitch, width, height, left + kSegmentThickness, top + kDigitHeight - kSegmentThickness, horizontalWidth, kSegmentThickness, foreground);
+            }
+            if (segments & kLowerLeft)
+            {
+                FillRectangle(pixels, pitch, width, height, left, top + halfHeight, kSegmentThickness, verticalHeight, foreground);
+            }
+            if (segments & kUpperLeft)
+            {
+                FillRectangle(pixels, pitch, width, height, left, top + kSegmentThickness, kSegmentThickness, verticalHeight, foreground);
+            }
+            if (segments & kMiddle)
+            {
+                FillRectangle(pixels, pitch, width, height, left + kSegmentThickness, top + halfHeight - kSegmentThickness / 2, horizontalWidth, kSegmentThickness, foreground);
+            }
+        }
+    }
+}
+
 HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
 {
     RETURN_HR_IF_NULL(E_INVALIDARG, pMediaType);
@@ -19,7 +146,7 @@ HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
 
 /*:
    Writes to a buffer representing a 2D image.
-   Writes a different constant to each line based on row number and current time.
+   Writes a per-frame moving pattern and six-digit frame counter.
    Assumes top down image, no negative stride and pBuf points to the begnning of the buffer of length len.
    Param:
    pBuf - pointer to beginning of buffer
@@ -32,11 +159,12 @@ HRESULT SimpleFrameGenerator::CreateFrame(
     _In_ LONG pitch,
     _In_ ULONG rgbMask)
 {
+    ++m_frameNumber;
     if (m_subType == MFVideoFormat_RGB32)
     {
         DEBUG_MSG(L"RGB32 frames %s\n", winrt::to_hstring(MFVideoFormat_RGB32).data());
 
-        RETURN_IF_FAILED(_CreateRGB32Frame(pBuf, len, pitch, m_width, m_height, rgbMask));
+        RETURN_IF_FAILED(_CreateRGB32Frame(pBuf, len, pitch, m_width, m_height, rgbMask, m_frameNumber));
     }
     else if(m_subType == MFVideoFormat_NV12)
     {
@@ -46,7 +174,7 @@ HRESULT SimpleFrameGenerator::CreateFrame(
         wil::unique_cotaskmem_ptr<BYTE[]> spBuff = wil::make_unique_cotaskmem_nothrow<BYTE[]>(frameBuffLen);
         RETURN_IF_NULL_ALLOC(spBuff.get());
 
-        RETURN_IF_FAILED(_CreateRGB32Frame(spBuff.get(), frameBuffLen, m_width * 4, m_width, m_height, rgbMask));
+        RETURN_IF_FAILED(_CreateRGB32Frame(spBuff.get(), frameBuffLen, m_width * 4, m_width, m_height, rgbMask, m_frameNumber));
         RETURN_IF_FAILED(RGB32ToNV12Frame(spBuff.get(), frameBuffLen, m_width * 4, m_width, m_height, pBuf, len, pitch));
     }
     else
@@ -66,7 +194,8 @@ HRESULT SimpleFrameGenerator::_CreateRGB32Frame(
     _In_ LONG pitch,
     _In_ DWORD width,
     _In_ DWORD height,
-    _In_ ULONG rgbMask )
+    _In_ ULONG rgbMask,
+    _In_ UINT32 frameNumber )
 {
     RETURN_HR_IF_NULL(E_INVALIDARG, pBuf);
     if (len < (abs(pitch) * height ))
@@ -74,8 +203,7 @@ HRESULT SimpleFrameGenerator::_CreateRGB32Frame(
         return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
     }
 
-    LONGLONG curSysTimeInS = MFGetSystemTime() / (MFTIME)10000000;
-    int offset = curSysTimeInS % height;
+    const int offset = static_cast<int>(frameNumber % height);
 
     for (unsigned int r = 0; r < height; r++)
     {
@@ -88,6 +216,7 @@ HRESULT SimpleFrameGenerator::_CreateRGB32Frame(
         }
     }
 
+    DrawFrameCounter(pBuf, pitch, width, height, rgbMask, frameNumber);
     return S_OK;
 }
 
