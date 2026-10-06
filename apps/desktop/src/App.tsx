@@ -36,7 +36,7 @@ const headings: Record<PageKey, { eyebrow: string; title: string; description: s
   settings: {
     eyebrow: 'Настройки',
     title: 'Под ваш сценарий',
-    description: 'Основные настройки приложения и способ просмотра.',
+    description: 'Параметры пока неактивны и появятся вместе с соответствующими функциями.',
   },
   diagnostics: {
     eyebrow: 'Диагностика',

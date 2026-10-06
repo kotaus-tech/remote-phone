@@ -141,7 +141,7 @@ private fun StageTwoHome() {
                     border = BorderStroke(1.dp, Mint.copy(alpha = 0.16f))
                 ) {
                     Text(
-                        text = "Этап 2",
+                        text = "Этап 3",
                         modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                         color = Mint,
                         fontSize = 10.sp,

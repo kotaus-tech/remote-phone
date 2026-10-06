@@ -6,6 +6,7 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import org.java_websocket.WebSocket
 import org.java_websocket.drafts.Draft
 import org.java_websocket.drafts.Draft_6455
@@ -26,6 +27,7 @@ import java.util.concurrent.TimeUnit
 private const val MAX_FRAME_BYTES = 256 * 1024
 private const val SESSION_LIFETIME_SECONDS = 5 * 60
 private const val SERVICE_TYPE = "_remotephone._tcp."
+private const val LOG_TAG = "RemotePhonePairing"
 
 internal enum class PhonePairingPhase {
     IDLE,
@@ -125,10 +127,17 @@ internal class PhonePairingHost(
                 val createdServer = PairingWebSocketServer(createdHandle, "Видоискатель-$suffix")
                 server = createdServer
                 createdServer.start()
-            } catch (_: Exception) {
+            } catch (error: LinkageError) {
+                Log.e(LOG_TAG, "Нативный модуль сопряжения недоступен", error)
                 stopInternal(
                     PhonePairingPhase.FAILED,
-                    "Не удалось запустить сопряжение. Проверьте локальную сеть и повторите попытку."
+                    "Не удалось загрузить модуль сопряжения. Перезапустите приложение; техническая причина записана в журнал Android."
+                )
+            } catch (error: Exception) {
+                Log.e(LOG_TAG, "Не удалось запустить сеанс сопряжения", error)
+                stopInternal(
+                    PhonePairingPhase.FAILED,
+                    "Не удалось запустить сопряжение. Техническая причина записана в журнал Android; повторите попытку."
                 )
             }
         }
@@ -335,6 +344,9 @@ internal class PhonePairingHost(
                     ?: throw IllegalStateException("PAIRING_FAILED")
                 connection.send(hello)
                 publish(state.copy(phase = PhonePairingPhase.VERIFYING, message = "Компьютер подключён. Проверяем код…"))
+            } catch (error: LinkageError) {
+                Log.e(LOG_TAG, "Ошибка вызова нативного модуля при начале сопряжения", error)
+                failConnection(connection, "Не удалось запустить нативное сопряжение. Проверьте журнал Android.")
             } catch (_: Exception) {
                 failConnection(connection, "Не удалось начать защищённое сопряжение.")
             }
@@ -368,6 +380,13 @@ internal class PhonePairingHost(
                 } else {
                     publish(state.copy(attemptsUsed = attempts))
                 }
+            } catch (error: LinkageError) {
+                Log.e(LOG_TAG, "Ошибка вызова нативного модуля при обработке кадра", error)
+                connection.close(1008, "Нативный модуль недоступен")
+                worker.execute {
+                    stopInternal(PhonePairingPhase.FAILED, "Нативный модуль сопряжения недоступен. Остановите сеанс и попробуйте позже.")
+                }
+                return
             } catch (_: Exception) {
                 if (state.phase == PhonePairingPhase.AUTHENTICATED) {
                     connection.close(1008, "Защищённый кадр отклонён")

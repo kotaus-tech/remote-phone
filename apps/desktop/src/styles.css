@@ -165,13 +165,13 @@ button:disabled { cursor: default; }
 .button-group { display: flex; gap: 6px; }
 .button-group button, .secondary-button { min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.025); color: #c1ccd4; font-size: 0.82rem; }
 .button-group button:disabled, .secondary-button:disabled { color: #7b8996; opacity: .65; }
-.camera-layout, .settings-grid { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(300px,.75fr); gap: 18px; align-items: start; }
-.camera-panel { padding: 13px; }
-.camera-stage { aspect-ratio: 16 / 9; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.06); border-radius: 13px; background: radial-gradient(ellipse at 50% 33%, #202b34, #10151b 68%); }
-.camera-status-icon { width: 41px; height: 41px; display: grid; place-items: center; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 13px; color: #8996a2; background: rgba(255,255,255,.025); font-size: 1.35rem; }
-.camera-stage strong { font-size: 1.02rem; font-weight: 620; }
-.camera-stage span { margin-top: 6px; color: var(--muted); font-size: 0.82rem; }
-.camera-note { padding: 18px; }
+.camera-layout, .settings-grid { min-width: 0; display: grid; grid-template-columns: minmax(0,1.45fr) minmax(300px,.75fr); gap: 18px; align-items: start; }
+.camera-panel { min-width: 0; padding: 13px; }
+.camera-stage { width: 100%; min-width: 0; min-height: 0; aspect-ratio: 16 / 9; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; border: 1px solid rgba(255,255,255,.06); border-radius: 13px; background: radial-gradient(ellipse at 50% 33%, #202b34, #10151b 68%); }
+.camera-status-icon { width: 41px; height: 41px; display: grid; flex: 0 0 auto; place-items: center; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 13px; color: #8996a2; background: rgba(255,255,255,.025); font-size: 1.35rem; }
+.camera-stage strong { max-width: calc(100% - 24px); text-align: center; font-size: 1.02rem; font-weight: 620; }
+.camera-stage span { max-width: calc(100% - 24px); margin-top: 6px; color: var(--muted); font-size: 0.82rem; text-align: center; }
+.camera-note { min-width: 0; padding: 18px; }
 .camera-note-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.065); color: var(--muted); font-size: 0.82rem; }
 .camera-note-row strong { color: #ccd5dc; font-weight: 550; }
 .settings-panel { overflow: hidden; }
