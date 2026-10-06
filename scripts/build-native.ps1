@@ -54,11 +54,16 @@ Copy-Item -LiteralPath $mediaSourceDll -Destination (Join-Path $runtimeDirectory
 Copy-Item -LiteralPath $cameraHost -Destination (Join-Path $runtimeDirectory 'RemotePhone.VirtualCameraHost.exe') -Force
 Copy-Item -LiteralPath $pairingBridgeDll -Destination (Join-Path $runtimeDirectory 'remote_phone_pairing_bridge.dll') -Force
 $pocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-poc.ps1'
-try {
-    $null = [scriptblock]::Create((Get-Content -LiteralPath $pocScript -Raw))
-} catch {
-    throw "Сценарий аппаратного PoC содержит синтаксическую ошибку PowerShell: $($_.Exception.Message)"
+$comAuditScript = Join-Path $repoRoot 'scripts\inspect-virtual-camera-com.ps1'
+foreach ($scriptPath in @($pocScript, $comAuditScript)) {
+    try {
+        $null = [scriptblock]::Create((Get-Content -LiteralPath $scriptPath -Raw))
+    } catch {
+        throw "Сценарий PowerShell '$scriptPath' содержит синтаксическую ошибку: $($_.Exception.Message)"
+    }
 }
 Copy-Item -LiteralPath $pocScript `
     -Destination (Join-Path $runtimeDirectory 'Run-VirtualCameraPoC.ps1') -Force
-Write-Host 'Нативные x64-компоненты и сценарий аппаратного PoC готовы для включения в Setup.exe.'
+Copy-Item -LiteralPath $comAuditScript `
+    -Destination (Join-Path $runtimeDirectory 'Inspect-VirtualCameraCom.ps1') -Force
+Write-Host 'Нативные x64-компоненты, сценарий PoC и read-only аудит COM-регистрации готовы для включения в Setup.exe.'
