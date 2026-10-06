@@ -68,7 +68,7 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Установить платформу сборки
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Установить Rust stable для Android arm64
         uses: dtolnay/rust-toolchain@stable
@@ -77,6 +77,9 @@ jobs:
 
       - name: Проверить общий Rust-core для Android arm64
         run: cargo check --manifest-path native/Cargo.toml --target aarch64-linux-android --locked
+
+      - name: Собрать native-библиотеку pairing-core для APK
+        run: ./scripts/build-android-pairing.sh
 
       - name: Собрать APK
         working-directory: apps/android
@@ -124,6 +127,7 @@ jobs:
         working-directory: apps/desktop
         run: |
           npm ci
+          npm test
           npm run dist:win
 
       - name: Проверить установку и удаление Setup.exe

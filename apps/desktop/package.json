@@ -7,12 +7,16 @@
   "main": "electron/main.cjs",
   "scripts": {
     "build": "tsc --noEmit && vite build",
+    "test": "node --test electron/pairing.test.cjs",
     "start": "npm run build && electron .",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
+    "bonjour-service": "1.4.4",
+    "koffi": "3.3.2",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/react": "19.1.8",

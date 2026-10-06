@@ -34,6 +34,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,8 +85,16 @@ private enum class PhoneMode(val title: String, val description: String, val gly
 
 @Composable
 private fun StageTwoHome() {
+    val context = LocalContext.current
     var selectedMode by remember { mutableStateOf(PhoneMode.SCREEN) }
     var allowControl by remember { mutableStateOf(false) }
+    var pairingState by remember { mutableStateOf(PhonePairingState()) }
+    val pairingHost = remember {
+        PhonePairingHost(context.applicationContext) { nextState -> pairingState = nextState }
+    }
+    DisposableEffect(pairingHost) {
+        onDispose { pairingHost.close() }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -146,7 +156,7 @@ private fun StageTwoHome() {
             Text("Что хотите показать?", color = TextPrimary, fontSize = 27.sp, lineHeight = 32.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(7.dp))
             Text(
-                "Выберите режим. Подключение к компьютеру появится на следующем этапе.",
+                "Создайте локальный PIN-сеанс, чтобы проверить защищённое сопряжение с компьютером.",
                 color = TextSecondary,
                 fontSize = 13.sp,
                 lineHeight = 19.sp
@@ -175,11 +185,12 @@ private fun StageTwoHome() {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Разрешить управление с ПК", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                             Spacer(Modifier.height(3.dp))
-                            Text("Можно изменить во время сеанса", color = TextSecondary, fontSize = 10.sp)
+                            Text("Управление появится на следующем этапе", color = TextSecondary, fontSize = 10.sp)
                         }
                         Switch(
                             checked = allowControl,
                             onCheckedChange = { allowControl = it },
+                            enabled = false,
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = MintInk,
                                 checkedTrackColor = Mint,
@@ -193,45 +204,31 @@ private fun StageTwoHome() {
                 Spacer(Modifier.height(12.dp))
             }
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(15.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF141B21)),
-                border = BorderStroke(1.dp, Outline.copy(alpha = 0.65f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        modifier = Modifier.size(31.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        color = Mint.copy(alpha = 0.1f)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("⌁", color = Mint, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(Modifier.width(11.dp))
-                    Column {
-                        Text("Готово к подключению", color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(3.dp))
-                        Text("Поиск и PIN появятся на следующем этапе", color = TextSecondary, fontSize = 10.sp)
-                    }
-                }
-            }
+            PhonePairingCard(pairingState)
             Spacer(Modifier.height(14.dp))
+            val sessionActive = pairingState.phase in setOf(
+                PhonePairingPhase.STARTING,
+                PhonePairingPhase.WAITING,
+                PhonePairingPhase.VERIFYING,
+                PhonePairingPhase.AUTHENTICATED
+            )
             Button(
-                onClick = {},
-                enabled = false,
+                onClick = { if (sessionActive) pairingHost.stop() else pairingHost.start() },
+                enabled = pairingState.phase != PhonePairingPhase.STARTING,
                 modifier = Modifier.fillMaxWidth().height(50.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
+                    containerColor = if (sessionActive) Color(0xFF26313A) else Mint,
+                    contentColor = if (sessionActive) TextPrimary else MintInk,
                     disabledContainerColor = Color(0xFF26313A),
-                    disabledContentColor = Color(0xFF9AA7B5)
+                    disabledContentColor = TextSecondary
                 )
             ) {
-                Text("Старт появится после настройки соединения", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (sessionActive) "Завершить сеанс" else "Создать PIN и ждать подключения",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
             Spacer(Modifier.height(14.dp))
             Text(

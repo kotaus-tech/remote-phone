@@ -10,7 +10,7 @@ $sourceObj = Join-Path $buildRoot 'sample-obj'
 $hostBuild = Join-Path $buildRoot 'host'
 $runtimeDirectory = Join-Path $repoRoot 'apps\desktop\native-runtime'
 
-foreach ($commandName in @('msbuild', 'nuget', 'cmake')) {
+foreach ($commandName in @('msbuild', 'nuget', 'cmake', 'cargo')) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Не найдена команда $commandName. Установите инструменты сборки Windows C++ и повторите сборку."
     }
@@ -39,7 +39,11 @@ if ($LASTEXITCODE -ne 0) { throw "Сборка тестового host заве�
 
 $mediaSourceDll = Join-Path $sourceOut 'VirtualCameraMediaSource.dll'
 $cameraHost = Join-Path $hostBuild 'Release\RemotePhone.VirtualCameraHost.exe'
-foreach ($artifact in @($mediaSourceDll, $cameraHost)) {
+Write-Host 'Собирается C ABI мост pairing-core для Windows x64…'
+& cargo build --manifest-path (Join-Path $repoRoot 'native\Cargo.toml') --package remote-phone-pairing-bridge --release --locked
+if ($LASTEXITCODE -ne 0) { throw "Сборка pairing-core завершилась с кодом $LASTEXITCODE." }
+$pairingBridgeDll = Join-Path $repoRoot 'native\target\release\remote_phone_pairing_bridge.dll'
+foreach ($artifact in @($mediaSourceDll, $cameraHost, $pairingBridgeDll)) {
     if (-not (Test-Path -LiteralPath $artifact)) {
         throw "Не найден ожидаемый native-артефакт: $artifact"
     }
@@ -48,4 +52,5 @@ foreach ($artifact in @($mediaSourceDll, $cameraHost)) {
 New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Copy-Item -LiteralPath $mediaSourceDll -Destination (Join-Path $runtimeDirectory 'VirtualCameraMediaSource.dll') -Force
 Copy-Item -LiteralPath $cameraHost -Destination (Join-Path $runtimeDirectory 'RemotePhone.VirtualCameraHost.exe') -Force
+Copy-Item -LiteralPath $pairingBridgeDll -Destination (Join-Path $runtimeDirectory 'remote_phone_pairing_bridge.dll') -Force
 Write-Host 'Нативные x64-компоненты готовы для включения в Setup.exe.'

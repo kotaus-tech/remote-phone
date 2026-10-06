@@ -22,8 +22,10 @@ if ($install.ExitCode -ne 0) { throw "Setup.exe завершился с кодо
 
 $installedDll = Join-Path $installDirectory 'resources\native\VirtualCameraMediaSource.dll'
 $installedHost = Join-Path $installDirectory 'resources\native\RemotePhone.VirtualCameraHost.exe'
+$installedPairingBridge = Join-Path $installDirectory 'resources\native\remote_phone_pairing_bridge.dll'
 if (-not (Test-Path -LiteralPath $installedDll)) { throw "DLL не попала в Setup.exe: $installedDll" }
 if (-not (Test-Path -LiteralPath $installedHost)) { throw "Native host не попал в Setup.exe: $installedHost" }
+if (-not (Test-Path -LiteralPath $installedPairingBridge)) { throw "Rust-мост сопряжения не попал в Setup.exe: $installedPairingBridge" }
 if (-not (Test-Path -LiteralPath $comKey)) { throw "Установщик не создал COM-регистрацию: $comKey" }
 
 $registration = Get-ItemProperty -LiteralPath $comKey
