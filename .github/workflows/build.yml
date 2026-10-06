@@ -130,12 +130,30 @@ jobs:
         shell: pwsh
         run: ./scripts/build-native.ps1
 
+      - name: Установить зависимости приложения Windows
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Проверить desktop-тесты Windows
+        working-directory: apps/desktop
+        run: npm test
+
       - name: Собрать Windows Setup.exe
         working-directory: apps/desktop
+        shell: pwsh
         run: |
-          npm ci
-          npm test
-          npm run dist:win
+          $output = & npm run dist:win 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            $details = @($output | ForEach-Object { [string] $_ } | Where-Object { $_ -match '(?i)error|failed|exception|fatal|not found|cannot' } | Select-Object -Last 12)
+            if ($details.Count -eq 0) { $details = @($output | Select-Object -Last 12) }
+            $message = ($details -join ' | ')
+            if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows Setup build::$message"
+            exit $exitCode
+          }
 
       - name: Проверить установку и удаление Setup.exe
         shell: pwsh
