@@ -184,6 +184,13 @@ try {
 
     Write-Host 'Setup.exe: установка, удаление, HKLM64, Program Files, ACL и доступный на runner Media Foundation smoke test проверены.'
 }
+catch {
+    $message = $_.Exception.Message
+    if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
+    $escapedMessage = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Host "::error title=Setup install verification::$escapedMessage"
+    throw
+}
 finally {
     if ($installed -and (Test-Path -LiteralPath $installDirectory)) {
         $uninstaller = Get-ChildItem -LiteralPath $installDirectory -Filter 'Uninstall*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
