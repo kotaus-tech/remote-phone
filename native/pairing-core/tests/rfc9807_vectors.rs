@@ -50,6 +50,13 @@ impl RngCore for VectorRng {
         // Mirror opaque-ke's RFC-vector CycleRng: consume only the bytes present
         // in the next vector chunk, leaving any unrequested tail unchanged.
         let length = self.bytes.len().min(destination.len());
+        eprintln!(
+            "RFC_VECTOR_RNG thread={} request={} take={} source={}",
+            std::thread::current().name().unwrap_or("unnamed"),
+            destination.len(),
+            length,
+            encode_hex(&self.bytes[..self.bytes.len().min(8)]),
+        );
         destination[..length].copy_from_slice(&self.bytes[..length]);
         self.bytes.rotate_left(length);
     }
