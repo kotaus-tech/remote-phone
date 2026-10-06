@@ -1,17 +1,18 @@
 !macro customInstall
   SetRegView 64
-  CreateDirectory "$COMMONAPPDATA\Kotaus\RemotePhone\logs"
+  SetShellVarContext all
+  CreateDirectory "$APPDATA\Kotaus\RemotePhone\logs"
   IfErrors 0 +2
     Abort "Не удалось создать каталог журнала виртуальной камеры в ProgramData."
-  FileOpen $0 "$COMMONAPPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" a
+  FileOpen $0 "$APPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" a
   IfErrors 0 +2
     Abort "Не удалось создать журнал виртуальной камеры в ProgramData."
   FileClose $0
 
-  ExecWait '"$SYSDIR\icacls.exe" "$COMMONAPPDATA\Kotaus\RemotePhone\logs" /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" "*S-1-5-20:(OI)(CI)M" "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q' $0
+  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs" /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" "*S-1-5-20:(OI)(CI)M" "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q' $0
   StrCmp $0 0 +2
     Abort "Не удалось настроить права каталога журнала в ProgramData."
-  ExecWait '"$SYSDIR\icacls.exe" "$COMMONAPPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" /grant:r "*S-1-5-18:F" "*S-1-5-19:M" "*S-1-5-20:M" "*S-1-5-32-545:(R,AD)" /C /Q' $0
+  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" /grant:r "*S-1-5-18:F" "*S-1-5-19:M" "*S-1-5-20:M" "*S-1-5-32-545:(R,AD)" /C /Q' $0
   StrCmp $0 0 +2
     Abort "Не удалось настроить права записи службы на журнал в ProgramData."
 

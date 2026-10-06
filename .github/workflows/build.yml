@@ -146,7 +146,7 @@ jobs:
           $exitCode = $LASTEXITCODE
           $output | ForEach-Object { Write-Host $_ }
           if ($exitCode -ne 0) {
-            $details = @($output | ForEach-Object { [string] $_ } | Where-Object { $_ -match '(?i)error|failed|exception|fatal|not found|cannot' } | Select-Object -Last 12)
+            $details = @($output | ForEach-Object { [string] $_ } | Where-Object { $_ -match '(?i)warning|error|failed|exception|fatal|not found|cannot' } | Select-Object -Last 12)
             if ($details.Count -eq 0) { $details = @($output | Select-Object -Last 12) }
             $message = ($details -join ' | ')
             if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
