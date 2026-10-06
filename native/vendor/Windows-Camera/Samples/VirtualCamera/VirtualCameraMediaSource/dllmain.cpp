@@ -6,6 +6,8 @@
 #include "pch.h"
 #include "VirtualCameraMediaSourceActivate.h"
 
+#pragma comment(lib, "ole32.lib")
+
 HINSTANCE   g_hInst;
 
 BOOL APIENTRY DllMain( HMODULE hModule,
@@ -55,8 +57,17 @@ HRESULT __stdcall DllGetClassObject(GUID const& clsid, GUID const& iid, void** r
     {
         *result = nullptr;
 
-        if (clsid == __uuidof(winrt::WindowsSample::implementation::VirtualCameraMediaSourceActivate))
+        GUID isolatedDiagnosticClsid = {};
+        const HRESULT isolatedClsidParseResult = CLSIDFromString(
+            VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID,
+            &isolatedDiagnosticClsid);
+        const bool isSampleClsid = clsid == __uuidof(winrt::WindowsSample::implementation::VirtualCameraMediaSourceActivate);
+        const bool isIsolatedDiagnosticClsid = SUCCEEDED(isolatedClsidParseResult) &&
+            IsEqualGUID(clsid, isolatedDiagnosticClsid);
+        if (isSampleClsid || isIsolatedDiagnosticClsid)
         {
+            // The diagnostic alias intentionally resolves to the same Microsoft sample factory.
+            // It is accepted only to let the early PoC register a separate temporary CLSID in HKCU.
             return winrt::make_self<VirtualCameraMediaSourceActivateFactory>()->QueryInterface(iid, result);
         }
 

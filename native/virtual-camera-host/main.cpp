@@ -128,8 +128,20 @@ private:
 
 } // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t* argv[]) {
     ConfigureConsole();
+
+    const bool isolatedDiagnostic = argc == 2 && std::wcscmp(argv[1], L"--isolated-clsid") == 0;
+    if (argc > 1 && !isolatedDiagnostic) {
+        WriteWideText(STD_ERROR_HANDLE, L"Неизвестный параметр. Для изолированного COM-теста используйте --isolated-clsid.\n");
+        return 2;
+    }
+    const wchar_t* cameraFriendlyName = isolatedDiagnostic
+        ? L"Видоискатель — COM-изоляционный тест"
+        : L"Видоискатель — тестовый источник";
+    const wchar_t* sourceClsid = isolatedDiagnostic
+        ? VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID
+        : VIRTUALCAMERAMEDIASOURCE_CLSID;
 
     Apartment apartment;
     HRESULT result = apartment.Initialize();
@@ -150,8 +162,8 @@ int wmain() {
         MFVirtualCameraType_SoftwareCameraSource,
         MFVirtualCameraLifetime_Session,
         MFVirtualCameraAccess_CurrentUser,
-        L"Видоискатель — тестовый источник",
-        VIRTUALCAMERAMEDIASOURCE_CLSID,
+        cameraFriendlyName,
+        sourceClsid,
         nullptr,
         0,
         camera.GetAddressOf());
@@ -186,10 +198,12 @@ int wmain() {
         return 1;
     }
 
-    WriteWideText(
-        STD_OUTPUT_HANDLE,
-        L"Тестовая камера запущена. Откройте приложение «Камера» Windows, Chrome, Edge или OBS.\n"
-        L"Чтобы остановить её и убрать из списка камер, нажмите Ввод.\n");
+    const wchar_t* startedMessage = isolatedDiagnostic
+        ? L"Изолированная COM-тестовая камера запущена. Выберите «Видоискатель — COM-изоляционный тест» в Chrome, Edge, Discord или OBS.\n"
+          L"Откройте приложения по одному; затем нажмите Ввод, чтобы остановить камеру и убрать её из списка.\n"
+        : L"Тестовая камера запущена. Откройте приложение «Камера» Windows, Chrome, Edge, Discord или OBS.\n"
+          L"Чтобы остановить её и убрать из списка камер, нажмите Ввод.\n";
+    WriteWideText(STD_OUTPUT_HANDLE, startedMessage);
     std::wstring input;
     std::getline(std::wcin, input);
 
@@ -210,6 +224,10 @@ int wmain() {
     if (FAILED(stopResult) || FAILED(removeResult) || FAILED(shutdownResult)) {
         return 1;
     }
-    WriteWideText(STD_OUTPUT_HANDLE, L"Тестовая камера остановлена и удалена.\n");
+    WriteWideText(
+        STD_OUTPUT_HANDLE,
+        isolatedDiagnostic
+            ? L"Изолированная COM-тестовая камера остановлена и удалена.\n"
+            : L"Тестовая камера остановлена и удалена.\n");
     return 0;
 }

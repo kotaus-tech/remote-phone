@@ -55,7 +55,16 @@ Copy-Item -LiteralPath $cameraHost -Destination (Join-Path $runtimeDirectory 'Re
 Copy-Item -LiteralPath $pairingBridgeDll -Destination (Join-Path $runtimeDirectory 'remote_phone_pairing_bridge.dll') -Force
 $pocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-poc.ps1'
 $comAuditScript = Join-Path $repoRoot 'scripts\inspect-virtual-camera-com.ps1'
-foreach ($scriptPath in @($pocScript, $comAuditScript)) {
+$isolatedPocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-isolated-poc.ps1'
+$mediaSourceHeader = Join-Path $vendorRoot 'VirtualCameraMediaSource\VirtualCameraMediaSource.h'
+$isolatedClsidPattern = 'VIRTUALCAMERAMEDIASOURCE_ISOLATED_CLSID\s*=\s*L"(?<clsid>\{[0-9A-Fa-f-]+\})"'
+$isolatedClsidMatch = [regex]::Match((Get-Content -LiteralPath $mediaSourceHeader -Raw), $isolatedClsidPattern)
+if (-not $isolatedClsidMatch.Success) { throw 'В Microsoft source не найден ожидаемый CLSID изолированного PoC.' }
+$isolatedClsid = $isolatedClsidMatch.Groups['clsid'].Value
+if (-not (Get-Content -LiteralPath $isolatedPocScript -Raw).Contains($isolatedClsid)) {
+    throw "CLSID изолированного PowerShell-сценария не совпадает с Microsoft source: $isolatedClsid"
+}
+foreach ($scriptPath in @($pocScript, $comAuditScript, $isolatedPocScript)) {
     try {
         $null = [scriptblock]::Create((Get-Content -LiteralPath $scriptPath -Raw))
     } catch {
@@ -66,4 +75,6 @@ Copy-Item -LiteralPath $pocScript `
     -Destination (Join-Path $runtimeDirectory 'Run-VirtualCameraPoC.ps1') -Force
 Copy-Item -LiteralPath $comAuditScript `
     -Destination (Join-Path $runtimeDirectory 'Inspect-VirtualCameraCom.ps1') -Force
-Write-Host 'Нативные x64-компоненты, сценарий PoC и read-only аудит COM-регистрации готовы для включения в Setup.exe.'
+Copy-Item -LiteralPath $isolatedPocScript `
+    -Destination (Join-Path $runtimeDirectory 'Run-IsolatedVirtualCameraPoC.ps1') -Force
+Write-Host 'Нативные x64-компоненты, сценарии PoC и read-only аудит COM-регистрации готовы для включения в Setup.exe.'
