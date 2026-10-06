@@ -50,13 +50,6 @@ impl RngCore for VectorRng {
         // Mirror opaque-ke's RFC-vector CycleRng: consume only the bytes present
         // in the next vector chunk, leaving any unrequested tail unchanged.
         let length = self.bytes.len().min(destination.len());
-        eprintln!(
-            "RFC_VECTOR_RNG thread={} request={} take={} source={}",
-            std::thread::current().name().unwrap_or("unnamed"),
-            destination.len(),
-            length,
-            encode_hex(&self.bytes[..self.bytes.len().min(8)]),
-        );
         destination[..length].copy_from_slice(&self.bytes[..length]);
         self.bytes.rotate_left(length);
     }
@@ -179,11 +172,15 @@ fn run_real_vector(
     assert_hex_eq(RFC_REAL1_EXPORT_KEY, &registration_finish.export_key);
     let server_record = ServerRegistration::<Rfc9807CipherSuite>::finish(registration_finish.message);
 
-    let mut client_rng = VectorRng::new(concat_hex(&[
-        RFC_BLIND_LOGIN,
-        RFC_CLIENT_KEYSHARE_SEED,
-        RFC_CLIENT_NONCE,
-    ]));
+    // Ristretto's wide scalar sampler requests 64 bytes. The RFC blind is a
+    // canonical 32-byte scalar, so pad its upper half with zeroes before the
+    // independent key-share seed and client nonce to keep the vector fields
+    // aligned with the protocol inputs.
+    let mut client_randomness = decode_hex(RFC_BLIND_LOGIN);
+    client_randomness.extend([0_u8; 32]);
+    client_randomness.extend(decode_hex(RFC_CLIENT_KEYSHARE_SEED));
+    client_randomness.extend(decode_hex(RFC_CLIENT_NONCE));
+    let mut client_rng = VectorRng::new(client_randomness);
     let client_login = ClientLogin::<Rfc9807CipherSuite>::start(&mut client_rng, &password).unwrap();
     let login1 = client_login.message.serialize().to_vec();
     assert_hex_eq(RFC_REAL1_KE1, &login1);

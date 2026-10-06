@@ -31,7 +31,7 @@ jobs:
           cargo test --manifest-path native/pairing-core/Cargo.toml --all-targets --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/pairing-core-test.log"
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            details=$(grep -E '(error|panicked|FAILED|assertion failed|mismatch|RFC_VECTOR_RNG|could not compile|test result)' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 40 | paste -sd '\n' -)
+            details=$(grep -E '(error|panicked|FAILED|assertion failed|mismatch|could not compile|test result)' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 40 | paste -sd '\n' -)
             details=${details//'%'/'%25'}
             details=${details//$'\r'/'%0D'}
             details=${details//$'\n'/'%0A'}
