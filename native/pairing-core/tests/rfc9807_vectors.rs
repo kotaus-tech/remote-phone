@@ -92,9 +92,27 @@ fn concat_hex(parts: &[&str]) -> Vec<u8> {
     bytes
 }
 
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let byte = *byte;
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+#[track_caller]
 fn assert_hex_eq(expected_hex: &str, actual: &[u8]) {
     let expected = decode_hex(expected_hex);
-    assert_eq!(actual, expected.as_slice());
+    assert_eq!(
+        actual,
+        expected.as_slice(),
+        "RFC 9807 vector mismatch: expected {}, got {}",
+        encode_hex(&expected),
+        encode_hex(actual),
+    );
 }
 
 fn run_real_vector(
