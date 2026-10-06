@@ -38,6 +38,16 @@ jobs:
             echo "::error title=Ошибка тестов Rust-core::$details"
             exit "$status"
           fi
+          measurement=$(grep -F 'Измерение профиля Argon2id' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 1)
+          if [ -n "$measurement" ]; then
+            echo "$measurement" >> "$GITHUB_STEP_SUMMARY"
+            measurement=${measurement//'%'/'%25'}
+            measurement=${measurement//$'\r'/'%0D'}
+            measurement=${measurement//$'\n'/'%0A'}
+            echo "::notice title=Измерение Argon2id::$measurement"
+          else
+            echo "::warning title=Измерение Argon2id::Строка измерения не найдена в выводе тестов"
+          fi
 
   android:
     name: APK Android
