@@ -36,7 +36,7 @@ const OPAQUE_HASH_LEN: usize = 64;
 
 mod handshake;
 mod transport;
-pub use handshake::{HandshakeError, PcHandshake, PhoneHandshake};
+pub use handshake::{HandshakeError, PcHandshake, PhonePairingSession};
 pub use transport::{
     AuthenticatedSession, Frame, FrameSender, HandshakeTranscript, Hello, MessageType,
     SignalCipher, TransportError, AEAD_TAG_LEN, AUTH_TAG_LEN, FRAME_HEADER_LEN,
@@ -177,6 +177,21 @@ impl PairingServer {
     /// Number of well-formed OPAQUE login requests charged to this session.
     pub fn attempts_used(&self) -> u8 {
         self.attempts
+    }
+
+    /// Remaining advertised lifetime, rounded up to whole seconds.
+    pub(crate) fn remaining_lifetime_seconds(
+        &mut self,
+        now: Instant,
+    ) -> Result<u16, PairingError> {
+        self.ensure_active(now)?;
+        let remaining = PIN_LIFETIME.saturating_sub(now.saturating_duration_since(self.started_at));
+        let seconds = remaining
+            .as_secs()
+            .saturating_add((remaining.subsec_nanos() > 0) as u64)
+            .min(crate::MAX_SESSION_LIFETIME_SECONDS as u64)
+            .max(1);
+        Ok(seconds as u16)
     }
 
     /// Processes a bounded LOGIN1 payload and returns a serialized LOGIN2.
