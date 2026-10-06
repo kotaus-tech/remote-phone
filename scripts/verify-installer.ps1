@@ -132,6 +132,8 @@ try {
         Write-Host 'Запуск Media Foundation smoke test: проверка типов NV12/RGB32 и захват кадров 1080p60…'
         $smokeOutput = & $installedHost '--ci-smoke' 2>&1
         $smokeExitCode = $LASTEXITCODE
+        # Preserve the child's status for explicit policy handling below; otherwise the runner may treat the expected E_ACCESSDENIED as a script failure.
+        $global:LASTEXITCODE = 0
         $smokeOutput | ForEach-Object { Write-Host $_ }
         $smokeCaptureAvailable = $true
         if ($smokeExitCode -ne 0) {
