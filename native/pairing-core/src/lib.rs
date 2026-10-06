@@ -28,6 +28,20 @@ pub const PIN_LIFETIME: Duration = Duration::from_secs(5 * 60);
 pub const MAX_LOGIN_ATTEMPTS: u8 = 5;
 pub const MAX_OPAQUE_PAYLOAD_BYTES: usize = 16 * 1024;
 
+mod transport;
+pub use transport::{
+    AuthenticatedSession, Frame, FrameSender, HandshakeTranscript, Hello, MessageType,
+    SignalCipher, TransportError, AEAD_TAG_LEN, AUTH_TAG_LEN, FRAME_HEADER_LEN,
+    HELLO_PAYLOAD_LEN, MAX_FRAME_BYTES, MAX_SESSION_LIFETIME_SECONDS,
+    MAX_UNAUTHENTICATED_PAYLOAD_BYTES, PROFILE_ID, PROTOCOL_VERSION,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointRole {
+    Phone,
+    Pc,
+}
+
 const PIN_SPACE: u64 = 100_000_000;
 const PIN_PREFIX: &[u8] = b"remote-phone/pairing/v1/";
 const CLIENT_ID: &[u8] = b"remote-phone/windows";
@@ -239,6 +253,7 @@ impl PairingServer {
         let keys = SessionKeys::from_opaque_key(
             result.session_key.as_slice(),
             &self.session_id,
+            EndpointRole::Phone,
         )?;
 
         self.consumed = true;
@@ -366,6 +381,7 @@ impl PairingClient {
             let keys = SessionKeys::from_opaque_key(
                 result.session_key.as_slice(),
                 &self.session_id,
+                EndpointRole::Pc,
             )?;
             Ok((payload, keys))
         })();
@@ -380,12 +396,14 @@ pub struct SessionKeys {
     confirm: Zeroizing<[u8; 64]>,
     pc_to_phone: Zeroizing<[u8; 32]>,
     phone_to_pc: Zeroizing<[u8; 32]>,
+    endpoint: EndpointRole,
 }
 
 impl SessionKeys {
     fn from_opaque_key(
         opaque_key: &[u8],
         session_id: &[u8; 16],
+        endpoint: EndpointRole,
     ) -> Result<Self, PairingError> {
         let hkdf = Hkdf::<Sha512>::new(Some(session_id), opaque_key);
         let mut confirm = Zeroizing::new([0_u8; 64]);
@@ -401,6 +419,7 @@ impl SessionKeys {
             confirm,
             pc_to_phone,
             phone_to_pc,
+            endpoint,
         })
     }
 
