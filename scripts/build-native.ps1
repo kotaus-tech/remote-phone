@@ -53,4 +53,12 @@ New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Copy-Item -LiteralPath $mediaSourceDll -Destination (Join-Path $runtimeDirectory 'VirtualCameraMediaSource.dll') -Force
 Copy-Item -LiteralPath $cameraHost -Destination (Join-Path $runtimeDirectory 'RemotePhone.VirtualCameraHost.exe') -Force
 Copy-Item -LiteralPath $pairingBridgeDll -Destination (Join-Path $runtimeDirectory 'remote_phone_pairing_bridge.dll') -Force
-Write-Host 'Нативные x64-компоненты готовы для включения в Setup.exe.'
+$pocScript = Join-Path $repoRoot 'scripts\run-virtual-camera-poc.ps1'
+try {
+    $null = [scriptblock]::Create((Get-Content -LiteralPath $pocScript -Raw))
+} catch {
+    throw "Сценарий аппаратного PoC содержит синтаксическую ошибку PowerShell: $($_.Exception.Message)"
+}
+Copy-Item -LiteralPath $pocScript `
+    -Destination (Join-Path $runtimeDirectory 'Run-VirtualCameraPoC.ps1') -Force
+Write-Host 'Нативные x64-компоненты и сценарий аппаратного PoC готовы для включения в Setup.exe.'

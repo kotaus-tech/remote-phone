@@ -23,9 +23,11 @@ if ($install.ExitCode -ne 0) { throw "Setup.exe завершился с кодо
 $installedDll = Join-Path $installDirectory 'resources\native\VirtualCameraMediaSource.dll'
 $installedHost = Join-Path $installDirectory 'resources\native\RemotePhone.VirtualCameraHost.exe'
 $installedPairingBridge = Join-Path $installDirectory 'resources\native\remote_phone_pairing_bridge.dll'
+$installedPocScript = Join-Path $installDirectory 'resources\native\Run-VirtualCameraPoC.ps1'
 if (-not (Test-Path -LiteralPath $installedDll)) { throw "DLL не попала в Setup.exe: $installedDll" }
-if (-not (Test-Path -LiteralPath $installedHost)) { throw "Native host не попал в Setup.exe: $installedHost" }
+if (-not (Test-Path -LiteralPath $installedHost)) { throw "Тестовая программа не попала в Setup.exe: $installedHost" }
 if (-not (Test-Path -LiteralPath $installedPairingBridge)) { throw "Rust-мост сопряжения не попал в Setup.exe: $installedPairingBridge" }
+if (-not (Test-Path -LiteralPath $installedPocScript)) { throw "Сценарий проверки COM-регистрации текущего пользователя не попал в Setup.exe: $installedPocScript" }
 if (-not (Test-Path -LiteralPath $comKey)) { throw "Установщик не создал COM-регистрацию: $comKey" }
 
 $registration = Get-ItemProperty -LiteralPath $comKey
@@ -41,4 +43,4 @@ $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -W
 if ($uninstall.ExitCode -ne 0) { throw "Удаление завершилось с кодом $($uninstall.ExitCode)." }
 if (Test-Path -LiteralPath $comKey) { throw 'После удаления осталась COM-регистрация виртуальной камеры.' }
 
-Write-Host 'Установка, вложение DLL и host, регистрация и очистка Setup.exe проверены.'
+Write-Host 'Проверены установка, вложение нативных библиотек и тестовой программы, сценария PowerShell, COM-регистрация и очистка Setup.exe.'
