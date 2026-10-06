@@ -64,7 +64,8 @@ $diagnosticEnvironmentVariable = 'REMOTE_PHONE_VCAM_DIAGNOSTIC_LOG_PATH'
 $previousDiagnosticLogPath = [Environment]::GetEnvironmentVariable($diagnosticEnvironmentVariable, 'Process')
 $diagnosticLogPath = Join-Path ([IO.Path]::GetTempPath()) ("RemotePhoneIsolatedVirtualCamera-{0}.log" -f [guid]::NewGuid().ToString('N'))
 try {
-    $diagnosticHeader = "poc_mode=isolated_hkcu_clsid`r`npoc_source_clsid=$cameraClsid`r`npoc_started={0:O}`r`n" -f [DateTime]::Now
+    $diagnosticStartedAt = [DateTime]::Now.ToString('O')
+    $diagnosticHeader = "poc_mode=isolated_hkcu_clsid`r`npoc_source_clsid=$cameraClsid`r`npoc_started=$diagnosticStartedAt`r`n"
     [IO.File]::WriteAllText($diagnosticLogPath, $diagnosticHeader, [Text.UTF8Encoding]::new($false))
     $diagnosticAcl = Get-Acl -LiteralPath $diagnosticLogPath
     foreach ($serviceSid in @('S-1-5-11', 'S-1-5-19', 'S-1-5-20')) {
