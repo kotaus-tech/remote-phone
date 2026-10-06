@@ -47,11 +47,11 @@ impl RngCore for VectorRng {
     }
 
     fn fill_bytes(&mut self, destination: &mut [u8]) {
-        let stream_len = self.bytes.len();
-        for (index, byte) in destination.iter_mut().enumerate() {
-            *byte = self.bytes[index % stream_len];
-        }
-        self.bytes.rotate_left(destination.len() % stream_len);
+        // Mirror opaque-ke's RFC-vector CycleRng: consume only the bytes present
+        // in the next vector chunk, leaving any unrequested tail unchanged.
+        let length = self.bytes.len().min(destination.len());
+        destination[..length].copy_from_slice(&self.bytes[..length]);
+        self.bytes.rotate_left(length);
     }
 
     fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Error> {
