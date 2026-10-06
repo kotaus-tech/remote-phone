@@ -34,7 +34,9 @@ const ARGON2_LANES: u32 = 4;
 const ARGON2_SALT_LEN: usize = opaque_ke::argon2::RECOMMENDED_SALT_LEN;
 const OPAQUE_HASH_LEN: usize = 64;
 
+mod handshake;
 mod transport;
+pub use handshake::{HandshakeError, PcHandshake, PhoneHandshake};
 pub use transport::{
     AuthenticatedSession, Frame, FrameSender, HandshakeTranscript, Hello, MessageType,
     SignalCipher, TransportError, AEAD_TAG_LEN, AUTH_TAG_LEN, FRAME_HEADER_LEN,
@@ -271,6 +273,11 @@ impl PairingServer {
     pub fn cancel(&mut self) {
         self.consumed = true;
         self.clear_secrets();
+    }
+
+    /// Drops a partially completed OPAQUE exchange when its transport closes.
+    pub(crate) fn abandon_pending_login(&mut self) {
+        self.pending_login = None;
     }
 
     fn ensure_active(&mut self, now: Instant) -> Result<(), PairingError> {
