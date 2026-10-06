@@ -13,10 +13,12 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     throw 'Запустите аудит в обычном, неповышенном PowerShell. Запрашивать или использовать права администратора не нужно.'
 }
 
+$classesRootRegistrationPath = "CLSID\$cameraClsid\InprocServer32"
 $hives = @(
-    [pscustomobject]@{ Name = 'HKCU'; Value = [Microsoft.Win32.RegistryHive]::CurrentUser },
-    [pscustomobject]@{ Name = 'HKLM'; Value = [Microsoft.Win32.RegistryHive]::LocalMachine },
-    [pscustomobject]@{ Name = 'HKCR (объединённый вид)'; Value = [Microsoft.Win32.RegistryHive]::ClassesRoot }
+    [pscustomobject]@{ Name = 'HKCU'; Value = [Microsoft.Win32.RegistryHive]::CurrentUser; Path = $registrationPath },
+    [pscustomobject]@{ Name = 'HKLM'; Value = [Microsoft.Win32.RegistryHive]::LocalMachine; Path = $registrationPath },
+    # HKCR is already the merged Classes root; it must not include the Software\Classes prefix.
+    [pscustomobject]@{ Name = 'HKCR (объединённый вид)'; Value = [Microsoft.Win32.RegistryHive]::ClassesRoot; Path = $classesRootRegistrationPath }
 )
 $views = @(
     [pscustomobject]@{ Name = '64-bit'; Value = [Microsoft.Win32.RegistryView]::Registry64 },
@@ -30,7 +32,7 @@ Write-Output 'Для каждого найденного InprocServer32 выво
 
 foreach ($view in $views) {
     foreach ($hive in $hives) {
-        $location = "$($hive.Name)\$($view.Name)\$registrationPath"
+        $location = "$($hive.Name)\$($view.Name)\$($hive.Path)"
         $baseKey = $null
         $serverKey = $null
 
@@ -38,7 +40,7 @@ foreach ($view in $views) {
         Write-Output "[$location]"
         try {
             $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive.Value, $view.Value)
-            $serverKey = $baseKey.OpenSubKey($registrationPath, $false)
+            $serverKey = $baseKey.OpenSubKey($hive.Path, $false)
             if ($null -eq $serverKey) {
                 Write-Output 'Запись отсутствует.'
                 continue
