@@ -519,6 +519,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-phone-pairing-bridge"
+version = "0.1.0"
+dependencies = [
+ "remote-phone-pairing-core",
+ "zeroize",
+]
+
+[[package]]
 name = "remote-phone-pairing-core"
 version = "0.1.0"
 dependencies = [

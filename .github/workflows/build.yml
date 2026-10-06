@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo test --manifest-path native/pairing-core/Cargo.toml --all-targets --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/pairing-core-test.log"
+          cargo test --manifest-path native/Cargo.toml --all-targets --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/pairing-core-test.log"
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             details=$(grep -E '(error|panicked|FAILED|assertion failed|mismatch|could not compile|test result)' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 40 | paste -sd '\n' -)
@@ -76,7 +76,7 @@ jobs:
           target: aarch64-linux-android
 
       - name: Проверить общий Rust-core для Android arm64
-        run: cargo check --manifest-path native/pairing-core/Cargo.toml --target aarch64-linux-android --locked
+        run: cargo check --manifest-path native/Cargo.toml --target aarch64-linux-android --locked
 
       - name: Собрать APK
         working-directory: apps/android
@@ -114,7 +114,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Собрать общий Rust-core для Windows x64
-        run: cargo build --manifest-path native/pairing-core/Cargo.toml --release --locked
+        run: cargo build --manifest-path native/Cargo.toml --release --locked
 
       - name: Собрать нативные компоненты
         shell: pwsh
