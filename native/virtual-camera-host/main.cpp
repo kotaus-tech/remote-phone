@@ -558,6 +558,13 @@ int wmain(int argc, wchar_t* argv[]) {
 
     result = camera->Start(nullptr);
     if (FAILED(result)) {
+        wchar_t smokeFailure[128] = {};
+        swprintf_s(
+            smokeFailure,
+            ARRAYSIZE(smokeFailure),
+            L"CI_CAMERA_START_FAILED hresult=0x%08lX\\n",
+            static_cast<unsigned long>(result));
+        WriteWideText(STD_ERROR_HANDLE, smokeFailure);
         ReportFailure(L"не удалось запустить тестовую виртуальную камеру", result);
         camera->Remove();
         camera->Shutdown();

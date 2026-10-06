@@ -15,6 +15,7 @@ $programFilesPrefix = [System.IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('
 $logDirectory = Join-Path $env:ProgramData 'Kotaus\RemotePhone\logs'
 $logPath = Join-Path $logDirectory 'VirtualCameraMediaSource.log'
 $installed = $false
+$captureSmokeResult = 'не запускался'
 
 function Assert-LogAccessRule {
     param(
@@ -123,7 +124,8 @@ try {
     $frameServer = Get-Service -Name 'FrameServer' -ErrorAction SilentlyContinue
     $windowsBuild = [System.Environment]::OSVersion.Version.Build
     if ($null -eq $frameServer -or $windowsBuild -lt 22000) {
-        Write-Host "Media Foundation camera smoke test пропущен: runner не поддерживает Windows 11 Virtual Camera API (build=$windowsBuild; FrameServer=$($null -ne $frameServer))."
+        $captureSmokeResult = "пропущен: API/FrameServer недоступен (build=$windowsBuild; FrameServer=$($null -ne $frameServer))"
+        Write-Host "Media Foundation camera smoke test $captureSmokeResult."
     }
     else {
         $logLengthBeforeSmoke = (Get-Item -LiteralPath $logPath).Length
@@ -131,6 +133,7 @@ try {
         $smokeOutput = & $installedHost '--ci-smoke' 2>&1
         $smokeExitCode = $LASTEXITCODE
         $smokeOutput | ForEach-Object { Write-Host $_ }
+        $smokeCaptureAvailable = $true
         if ($smokeExitCode -ne 0) {
             $failureLines = @($smokeOutput | ForEach-Object { [string] $_ })
             if (Test-Path -LiteralPath $logPath -PathType Leaf) {
@@ -141,41 +144,55 @@ try {
             $failureMessage = ($failureDetails -join ' | ')
             if ($failureMessage.Length -gt 3500) { $failureMessage = $failureMessage.Substring($failureMessage.Length - 3500) }
             $escapedFailureMessage = $failureMessage.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Host "::error title=Media Foundation camera smoke::$escapedFailureMessage"
-            throw "Media Foundation smoke test завершился с кодом $smokeExitCode."
+            if (($failureLines -join "`n") -match 'CI_CAMERA_START_FAILED hresult=0x80070005') {
+                $smokeCaptureAvailable = $false
+                $captureSmokeResult = 'пропущен: hosted runner запретил IMFVirtualCamera::Start (E_ACCESSDENIED)'
+                Write-Host "::warning title=Media Foundation camera capture::$escapedFailureMessage"
+                if ($env:GITHUB_STEP_SUMMARY) {
+                    Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "`n- Media Foundation capture smoke: $captureSmokeResult. Установка и удаление Setup проверяются отдельно."
+                }
+            }
+            else {
+                Write-Host "::error title=Media Foundation camera smoke::$escapedFailureMessage"
+                throw "Media Foundation smoke test завершился с кодом $smokeExitCode."
+            }
         }
-        if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
-            throw "Источник не создал журнал в ProgramData: $logPath"
+
+        if ($smokeCaptureAvailable) {
+            if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+                throw "Источник не создал журнал в ProgramData: $logPath"
+            }
+            $logBytes = [System.IO.File]::ReadAllBytes($logPath)
+            $logOffset = [int] $logLengthBeforeSmoke
+            if ($logBytes.Length -le $logOffset) {
+                throw 'Media Foundation smoke test не добавил записи в журнал ProgramData.'
+            }
+            $newLogContent = [System.Text.Encoding]::UTF8.GetString(
+                $logBytes,
+                $logOffset,
+                $logBytes.Length - $logOffset)
+            $identityLine = $newLogContent -split '\r?\n' |
+                Where-Object { $_.Contains('media_source_identity') } |
+                Select-Object -First 1
+            if ($null -eq $identityLine) {
+                throw 'Журнал этого smoke test не содержит новую запись идентификации media source.'
+            }
+            $hashMatch = [regex]::Match($identityLine, 'sha256=(?<hash>[A-Fa-f0-9]{64})')
+            $processMatch = [regex]::Match($identityLine, 'pid=(?<pid>[0-9]+) process="(?<name>[^"]+)" process_path="(?<path>[^"]+)"')
+            $dllMatch = [regex]::Match($identityLine, 'dll_path="(?<path>[^"]+)"')
+            if (-not $hashMatch.Success -or -not $processMatch.Success -or -not $dllMatch.Success) {
+                throw 'Новая запись журнала не содержит полный SHA-256, PID и пути процесса/DLL.'
+            }
+            if (-not [string]::Equals($hashMatch.Groups['hash'].Value, $installedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Источник загрузил DLL с SHA-256 $($hashMatch.Groups['hash'].Value), ожидалась установленная DLL $installedHash."
+            }
+            $loggedDllPath = [System.IO.Path]::GetFullPath($dllMatch.Groups['path'].Value)
+            if (-not [string]::Equals($loggedDllPath, [System.IO.Path]::GetFullPath($installedDll), [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Источник загрузил DLL не из установленного Program Files: $loggedDllPath"
+            }
+            $captureSmokeResult = 'пройден: режимы перечислены, захвачены меняющиеся кадры 1080p60'
+            Write-Host 'Media Foundation перечислил режимы, захватил меняющиеся кадры 1080p60 и записал идентификатор DLL/процесса.'
         }
-        $logBytes = [System.IO.File]::ReadAllBytes($logPath)
-        $logOffset = [int] $logLengthBeforeSmoke
-        if ($logBytes.Length -le $logOffset) {
-            throw 'Media Foundation smoke test не добавил записи в журнал ProgramData.'
-        }
-        $newLogContent = [System.Text.Encoding]::UTF8.GetString(
-            $logBytes,
-            $logOffset,
-            $logBytes.Length - $logOffset)
-        $identityLine = $newLogContent -split '\r?\n' |
-            Where-Object { $_.Contains('media_source_identity') } |
-            Select-Object -First 1
-        if ($null -eq $identityLine) {
-            throw 'Журнал этого smoke test не содержит новую запись идентификации media source.'
-        }
-        $hashMatch = [regex]::Match($identityLine, 'sha256=(?<hash>[A-Fa-f0-9]{64})')
-        $processMatch = [regex]::Match($identityLine, 'pid=(?<pid>[0-9]+) process="(?<name>[^"]+)" process_path="(?<path>[^"]+)"')
-        $dllMatch = [regex]::Match($identityLine, 'dll_path="(?<path>[^"]+)"')
-        if (-not $hashMatch.Success -or -not $processMatch.Success -or -not $dllMatch.Success) {
-            throw 'Новая запись журнала не содержит полный SHA-256, PID и пути процесса/DLL.'
-        }
-        if (-not [string]::Equals($hashMatch.Groups['hash'].Value, $installedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Источник загрузил DLL с SHA-256 $($hashMatch.Groups['hash'].Value), ожидалась установленная DLL $installedHash."
-        }
-        $loggedDllPath = [System.IO.Path]::GetFullPath($dllMatch.Groups['path'].Value)
-        if (-not [string]::Equals($loggedDllPath, [System.IO.Path]::GetFullPath($installedDll), [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Источник загрузил DLL не из установленного Program Files: $loggedDllPath"
-        }
-        Write-Host 'Media Foundation перечислил режимы, захватил меняющиеся кадры 1080p60 и записал идентификатор DLL/процесса.'
     }
 
     $uninstaller = Get-ChildItem -LiteralPath $installDirectory -Filter 'Uninstall*.exe' -File | Select-Object -First 1
@@ -194,7 +211,7 @@ try {
         throw "Деинсталлятор оставил каталог приложения: $installDirectory"
     }
 
-    Write-Host 'Setup.exe: установка, удаление, HKLM64, Program Files, ACL и доступный на runner Media Foundation smoke test проверены.'
+    Write-Host "Setup.exe: установка, удаление, HKLM64, Program Files и ACL проверены; Media Foundation capture smoke: $captureSmokeResult."
 }
 catch {
     $message = $_.Exception.Message
