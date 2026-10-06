@@ -713,6 +713,111 @@ mod tests {
     }
 
     #[test]
+    fn frame_decoder_is_panic_free_for_arbitrary_truncated_and_extreme_inputs() {
+        use rand::{RngCore, SeedableRng};
+        use rand_chacha::ChaCha20Rng;
+
+        let mut rng = ChaCha20Rng::from_seed([0xa4; 32]);
+        let valid_hello = Hello::new([0x39; 16], 300).unwrap().to_frame().unwrap();
+        let encoded_hello = valid_hello.encode().unwrap();
+
+        // Every strict prefix of a valid frame is rejected; the complete frame
+        // decodes and re-encodes byte-for-byte.
+        for length in 0..encoded_hello.len() {
+            assert_eq!(
+                Frame::decode(&encoded_hello[..length]),
+                Err(TransportError::MalformedFrame)
+            );
+        }
+        assert_eq!(
+            Frame::decode(&encoded_hello).unwrap().encode().unwrap(),
+            encoded_hello
+        );
+
+        // Unstructured random inputs and random headers with valid magic/types
+        // exercise parser branches without invoking OPAQUE or Argon2.
+        for _ in 0..2_048 {
+            let length = rng.next_u32() as usize % 513;
+            let mut bytes = vec![0; length];
+            rng.fill_bytes(&mut bytes);
+            if let Ok(frame) = Frame::decode(&bytes) {
+                assert_eq!(frame.encode().unwrap(), bytes);
+            }
+        }
+
+        let known_types = [
+            MessageType::Hello as u8,
+            MessageType::OpaqueLogin1 as u8,
+            MessageType::OpaqueLogin2 as u8,
+            MessageType::OpaqueLogin3 as u8,
+            MessageType::AuthOk as u8,
+            MessageType::AuthAck as u8,
+            MessageType::Signal as u8,
+            0xff,
+        ];
+        for index in 0..2_048 {
+            let length = FRAME_HEADER_LEN + rng.next_u32() as usize % 257;
+            let mut bytes = vec![0; length];
+            rng.fill_bytes(&mut bytes);
+            bytes[..4].copy_from_slice(b"RVP1");
+            bytes[4] = known_types[index % known_types.len()];
+
+            let sequence = match bytes[4] {
+                0x01 | 0x10 => 0_u32,
+                0x11 | 0x12 => 1,
+                0x13 | 0x14 => 2,
+                0x20 => 3,
+                _ => rng.next_u32(),
+            };
+            bytes[21..25].copy_from_slice(&sequence.to_be_bytes());
+            let declared_length = match index % 4 {
+                0 => (length - FRAME_HEADER_LEN) as u32,
+                1 => u32::MAX,
+                2 => (length - FRAME_HEADER_LEN + 1) as u32,
+                _ => rng.next_u32(),
+            };
+            bytes[25..29].copy_from_slice(&declared_length.to_be_bytes());
+
+            if let Ok(frame) = Frame::decode(&bytes) {
+                assert_eq!(frame.encode().unwrap(), bytes);
+            }
+        }
+
+        // Oversized buffers are rejected before payload copying; a huge length
+        // claim in a short header is rejected without attempting allocation.
+        let mut oversized = vec![0; MAX_FRAME_BYTES + 1];
+        oversized[..4].copy_from_slice(b"RVP1");
+        assert_eq!(
+            Frame::decode(&oversized),
+            Err(TransportError::MalformedFrame)
+        );
+        let mut huge_length_claim = vec![0; FRAME_HEADER_LEN];
+        huge_length_claim[..4].copy_from_slice(b"RVP1");
+        huge_length_claim[4] = MessageType::OpaqueLogin1 as u8;
+        huge_length_claim[21..25].copy_from_slice(&0_u32.to_be_bytes());
+        huge_length_claim[25..29].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            Frame::decode(&huge_length_claim),
+            Err(TransportError::MalformedFrame)
+        );
+
+        let max_sized_signal = Frame::new(
+            MessageType::Signal,
+            [0x61; 16],
+            FIRST_SIGNAL_SEQUENCE,
+            vec![0; MAX_FRAME_BYTES - FRAME_HEADER_LEN],
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        assert_eq!(max_sized_signal.len(), MAX_FRAME_BYTES);
+        assert_eq!(
+            Frame::decode(&max_sized_signal).unwrap().encode().unwrap(),
+            max_sized_signal
+        );
+    }
+
+    #[test]
     fn hello_rejects_unknown_version_profile_and_invalid_lifetime() {
         assert_eq!(
             Hello::new([0; 16], 0),

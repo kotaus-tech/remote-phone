@@ -24,8 +24,8 @@ jobs:
       - name: Установить Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Собрать и проверить тесты pairing-core
-        run: cargo test --manifest-path native/pairing-core/Cargo.toml --all-targets --locked
+      - name: Собрать и проверить тесты pairing-core и измерить Argon2id
+        run: cargo test --manifest-path native/pairing-core/Cargo.toml --all-targets --locked -- --nocapture
 
   android:
     name: APK Android

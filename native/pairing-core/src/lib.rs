@@ -28,6 +28,12 @@ pub const PIN_LIFETIME: Duration = Duration::from_secs(5 * 60);
 pub const MAX_LOGIN_ATTEMPTS: u8 = 5;
 pub const MAX_OPAQUE_PAYLOAD_BYTES: usize = 16 * 1024;
 
+const ARGON2_MEMORY_COST_KIB: u32 = 65_536;
+const ARGON2_TIME_COST: u32 = 3;
+const ARGON2_LANES: u32 = 4;
+const ARGON2_SALT_LEN: usize = opaque_ke::argon2::RECOMMENDED_SALT_LEN;
+const OPAQUE_HASH_LEN: usize = 64;
+
 mod transport;
 pub use transport::{
     AuthenticatedSession, Frame, FrameSender, HandshakeTranscript, Hello, MessageType,
@@ -523,8 +529,13 @@ fn user_identifier(session_id: &[u8; 16]) -> Vec<u8> {
 }
 
 fn argon2id_ksf() -> Argon2<'static> {
-    let params = Params::new(65_536, 3, 4, None)
-        .expect("the fixed Argon2id profile must always be valid");
+    let params = Params::new(
+        ARGON2_MEMORY_COST_KIB,
+        ARGON2_TIME_COST,
+        ARGON2_LANES,
+        None,
+    )
+    .expect("the fixed Argon2id profile must always be valid");
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
 
@@ -728,6 +739,60 @@ mod tests {
         );
         assert!(server.pin().expose_for_display().is_empty());
         assert!(server.password_file.is_empty());
+    }
+
+    #[test]
+    fn oversized_messages_are_rejected_before_opaque_processing() {
+        let (mut server, pin) = server_and_pin();
+        let now = server.started_at;
+        let oversized_login = vec![0; MAX_OPAQUE_PAYLOAD_BYTES + 1];
+        assert_eq!(
+            server.begin_login_at(&oversized_login, now),
+            Err(PairingError::InvalidMessage)
+        );
+        assert_eq!(server.attempts_used(), 0);
+
+        let session_id = *server.session_id();
+        let mut client_rng = seeded(67);
+        let (mut client, _) =
+            PairingClient::start_with_rng(&pin, session_id, &mut client_rng).unwrap();
+        let oversized_response = vec![0; MAX_OPAQUE_PAYLOAD_BYTES + 1];
+        assert!(matches!(
+            client.finish_with_rng(&oversized_response, &mut client_rng),
+            Err(PairingError::InvalidMessage)
+        ));
+        assert!(client.state.is_none());
+        assert!(client.pin.is_empty());
+    }
+
+    #[test]
+    fn production_argon2id_profile_cost_is_measured_for_ci() {
+        let profile = argon2id_ksf();
+        let input = [0_u8; OPAQUE_HASH_LEN];
+        let salt = [0_u8; ARGON2_SALT_LEN];
+        let mut output = [0_u8; OPAQUE_HASH_LEN];
+        let mut samples = Vec::with_capacity(3);
+
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            profile
+                .hash_password_into(&input, &salt, &mut output)
+                .expect("the production Argon2id profile must process a valid input");
+            samples.push(started.elapsed());
+        }
+        assert!(output.iter().any(|byte| *byte != 0));
+        samples.sort_unstable();
+
+        eprintln!(
+            "Измерение профиля Argon2id v0x13, 64 МиБ, t={}, p={}, соль {} байт, вход/выход {} байт: минимум {:.2} мс, медиана {:.2} мс, максимум {:.2} мс",
+            ARGON2_TIME_COST,
+            ARGON2_LANES,
+            ARGON2_SALT_LEN,
+            OPAQUE_HASH_LEN,
+            samples[0].as_secs_f64() * 1_000.0,
+            samples[1].as_secs_f64() * 1_000.0,
+            samples[2].as_secs_f64() * 1_000.0,
+        );
     }
 
     #[test]
