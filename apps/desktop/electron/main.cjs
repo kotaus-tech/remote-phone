@@ -124,17 +124,26 @@ function stopCameraHost() {
   }
 }
 
-function writeGpuTextureProbeLog(status) {
+function appendGpuTextureProbeLog(line) {
   const programData = process.env.ProgramData || process.env.PROGRAMDATA;
   if (!programData) return;
   const logPath = path.join(programData, 'Kotaus', 'RemotePhone', 'logs', 'VirtualCameraMediaSource.log');
-  const safeMessage = String(status.message || '').replace(/[\r\n]+/g, ' ');
-  const metrics = `phase=${status.phase} frames=${status.frameCount ?? 0} unique=${status.uniqueFrames ?? 0} dropped=${status.droppedFrames ?? 0} fps=${status.observedFps ?? 0} readback_avg_ms=${status.averageReadbackMs ?? 0} readback_max_ms=${status.maxReadbackMs ?? 0}`;
   try {
-    fs.appendFileSync(logPath, `${new Date().toISOString()} electron_gpu_texture_probe ${metrics} message="${safeMessage}"\r\n`, 'utf8');
+    fs.appendFileSync(logPath, `${new Date().toISOString()} electron_gpu_texture_probe ${line}\r\n`, 'utf8');
   } catch {
     // The installed product pre-creates this ProgramData log with append-only ACLs.
   }
+}
+
+function logGpuTextureProbeEvent(event, details = {}) {
+  const serialized = JSON.stringify(details).replace(/[\r\n]+/g, ' ');
+  appendGpuTextureProbeLog(`event=${event} details=${serialized}`);
+}
+
+function writeGpuTextureProbeLog(status) {
+  const safeMessage = String(status.message || '').replace(/[\r\n]+/g, ' ');
+  const metrics = `phase=${status.phase} frames=${status.frameCount ?? 0} unique=${status.uniqueFrames ?? 0} dropped=${status.droppedFrames ?? 0} fps=${status.observedFps ?? 0} readback_avg_ms=${status.averageReadbackMs ?? 0} readback_max_ms=${status.maxReadbackMs ?? 0}`;
+  appendGpuTextureProbeLog(`${metrics} message="${safeMessage}"`);
 }
 
 function publishGpuTextureProbeStatus(status) {
@@ -163,11 +172,21 @@ function finishGpuTextureProbe(session, phase, message) {
   if (gpuTextureProbeSession !== session) return;
   if (session.pending) {
     session.finishAfterReadback = { phase, message };
+    logGpuTextureProbeEvent('finish_deferred_until_readback', { phase, message });
     return;
   }
+  logGpuTextureProbeEvent('probe_finished', {
+    phase,
+    message,
+    frames: session.frameCount,
+    uniqueFrames: session.hashes.size,
+    paints: session.paintCount,
+    nativeCalls: session.nativeCallCount,
+  });
   gpuTextureProbeSession = null;
   clearTimeout(session.timeout);
   if (session.window && !session.window.isDestroyed()) {
+    logGpuTextureProbeEvent('offscreen_window_destroy_started', { phase });
     session.window.webContents.removeListener('paint', session.onPaint);
     session.window.destroy();
   }
@@ -193,6 +212,11 @@ function finishGpuTextureProbe(session, phase, message) {
 }
 
 function startGpuTextureProbe() {
+  logGpuTextureProbeEvent('requested', {
+    pid: process.pid,
+    platform: process.platform,
+    electron: process.versions.electron,
+  });
   if (process.platform !== 'win32') {
     const status = {
       phase: 'error',
@@ -207,12 +231,16 @@ function startGpuTextureProbe() {
   if (gpuTextureProbeSession) return Promise.resolve(gpuTextureProbeStatus);
 
   let addon;
+  const addonPath = getGpuTextureProbeAddonPath();
+  logGpuTextureProbeEvent('native_addon_load_started', { addonPath });
   try {
-    addon = require(getGpuTextureProbeAddonPath());
+    addon = require(addonPath);
     if (typeof addon.inspectSharedTexture !== 'function') {
       throw new Error('В native-модуле отсутствует inspectSharedTexture.');
     }
+    logGpuTextureProbeEvent('native_addon_loaded');
   } catch (error) {
+    logGpuTextureProbeEvent('native_addon_load_failed', { message: error.message });
     const status = {
       phase: 'error',
       message: `Не удалось загрузить D3D11-модуль GPU-проверки: ${error.message}`,
@@ -235,7 +263,10 @@ function startGpuTextureProbe() {
       pending: false,
       startedAt: 0,
       lastPublishedAt: 0,
+      lastNativeLogAt: 0,
       frameCount: 0,
+      paintCount: 0,
+      nativeCallCount: 0,
       droppedFrames: 0,
       hashes: new Set(),
       totalReadbackMs: 0,
@@ -258,8 +289,9 @@ function startGpuTextureProbe() {
       session.window = new BrowserWindow({
         width,
         height,
+        useContentSize: true,
         show: false,
-        frame: false,
+        frame: true,
         webPreferences: {
           offscreen: { useSharedTexture: true, deviceScaleFactor: 1 },
           contextIsolation: true,
@@ -269,14 +301,21 @@ function startGpuTextureProbe() {
           paintWhenInitiallyHidden: true,
         },
       });
+      logGpuTextureProbeEvent('offscreen_window_created', { width, height, hidden: true });
     } catch (error) {
+      logGpuTextureProbeEvent('offscreen_window_create_failed', { message: error.message });
       finishGpuTextureProbe(session, 'error', `Не удалось создать offscreen окно: ${error.message}`);
       return;
     }
 
     session.onPaint = (event) => {
+      session.paintCount += 1;
       const texture = event.texture;
+      if (session.paintCount === 1) {
+        logGpuTextureProbeEvent('first_paint', { texturePresent: Boolean(texture) });
+      }
       if (!texture) {
+        logGpuTextureProbeEvent('paint_without_shared_texture', { paintCount: session.paintCount });
         finishGpuTextureProbe(
           session,
           'error',
@@ -290,10 +329,32 @@ function startGpuTextureProbe() {
         return;
       }
 
-      const textureInfo = texture.textureInfo;
-      const sharedHandle = textureInfo?.handle?.ntHandle;
-      const size = textureInfo?.codedSize;
+      let textureInfo;
+      let sharedHandle;
+      let size;
+      try {
+        textureInfo = texture.textureInfo;
+        sharedHandle = textureInfo?.handle?.ntHandle;
+        size = textureInfo?.codedSize;
+      } catch (error) {
+        logGpuTextureProbeEvent('texture_info_read_failed', { message: error.message });
+        releaseOffscreenTexture(texture);
+        finishGpuTextureProbe(session, 'error', `Не удалось прочитать описание GPU-текстуры: ${error.message}`);
+        return;
+      }
+      if (session.paintCount === 1) {
+        logGpuTextureProbeEvent('first_texture_info', {
+          width: size?.width ?? null,
+          height: size?.height ?? null,
+          handleBytes: Buffer.isBuffer(sharedHandle) ? sharedHandle.length : null,
+        });
+      }
       if (!Buffer.isBuffer(sharedHandle) || !size || size.width !== width || size.height !== height) {
+        logGpuTextureProbeEvent('invalid_texture_info', {
+          width: size?.width ?? null,
+          height: size?.height ?? null,
+          handleBytes: Buffer.isBuffer(sharedHandle) ? sharedHandle.length : null,
+        });
         releaseOffscreenTexture(texture);
         finishGpuTextureProbe(
           session,
@@ -305,6 +366,18 @@ function startGpuTextureProbe() {
 
       if (session.startedAt === 0) session.startedAt = Date.now();
       session.pending = true;
+      session.nativeCallCount += 1;
+      const nativeCallNumber = session.nativeCallCount;
+      const nativeLogTime = Date.now();
+      if (nativeCallNumber === 1 || nativeLogTime - session.lastNativeLogAt >= 1000) {
+        session.lastNativeLogAt = nativeLogTime;
+        logGpuTextureProbeEvent('d3d11_readback_started', {
+          call: nativeCallNumber,
+          width,
+          height,
+          handleBytes: sharedHandle.length,
+        });
+      }
       let readbackError = null;
       Promise.resolve()
         .then(() => addon.inspectSharedTexture(sharedHandle, width, height))
@@ -313,7 +386,17 @@ function startGpuTextureProbe() {
           session.hashes.add(sample.pixelHash);
           session.totalReadbackMs += sample.readbackMs;
           session.maxReadbackMs = Math.max(session.maxReadbackMs, sample.readbackMs);
-          const elapsedMs = Date.now() - session.startedAt;
+          const completionLogTime = Date.now();
+          if (nativeCallNumber === 1 || completionLogTime - session.lastNativeLogAt >= 1000) {
+            session.lastNativeLogAt = completionLogTime;
+            logGpuTextureProbeEvent('d3d11_readback_completed', {
+              call: nativeCallNumber,
+              frameCount: session.frameCount,
+              uniqueFrames: session.hashes.size,
+              readbackMs: Number(sample.readbackMs.toFixed(2)),
+            });
+          }
+          const elapsedMs = completionLogTime - session.startedAt;
           if (elapsedMs - session.lastPublishedAt >= 500) {
             session.lastPublishedAt = elapsedMs;
             const elapsedSeconds = Math.max(elapsedMs / 1000, 0.001);
@@ -333,6 +416,10 @@ function startGpuTextureProbe() {
         })
         .catch((error) => {
           readbackError = error;
+          logGpuTextureProbeEvent('d3d11_readback_failed', {
+            call: nativeCallNumber,
+            message: error.message,
+          });
         })
         .then(() => {
           releaseOffscreenTexture(texture);
@@ -371,21 +458,38 @@ function startGpuTextureProbe() {
 
     session.window.webContents.on('paint', session.onPaint);
     session.window.once('closed', () => {
+      logGpuTextureProbeEvent('offscreen_window_closed', { paintCount: session.paintCount });
       if (gpuTextureProbeSession === session) {
         finishGpuTextureProbe(session, 'error', 'Offscreen окно GPU-проверки неожиданно закрылось.');
       }
     });
     session.window.webContents.once('did-finish-load', () => {
       if (gpuTextureProbeSession !== session) return;
-      session.window.webContents.setFrameRate(30);
+      logGpuTextureProbeEvent('probe_page_loaded');
+      try {
+        session.window.webContents.setFrameRate(30);
+        logGpuTextureProbeEvent('frame_rate_set', { fps: 30 });
+      } catch (error) {
+        logGpuTextureProbeEvent('frame_rate_set_failed', { message: error.message });
+        finishGpuTextureProbe(session, 'error', `Не удалось настроить частоту GPU-теста: ${error.message}`);
+      }
     });
     session.window.webContents.once('did-fail-load', (_event, code, description) => {
+      logGpuTextureProbeEvent('probe_page_load_failed', { code, description });
       finishGpuTextureProbe(session, 'error', `Не удалось загрузить GPU-тест: ${description} (${code}).`);
     });
+    session.window.webContents.once('render-process-gone', (_event, details) => {
+      logGpuTextureProbeEvent('probe_renderer_gone', details);
+      finishGpuTextureProbe(session, 'error', `Renderer тестового окна завершился: ${details.reason} (${details.exitCode}).`);
+    });
     session.timeout = setTimeout(() => {
+      logGpuTextureProbeEvent('probe_timeout', { paintCount: session.paintCount, nativeCalls: session.nativeCallCount });
       finishGpuTextureProbe(session, 'error', 'За отведённое время не удалось получить стабильную последовательность GPU-кадров.');
     }, 12_000);
-    session.window.loadFile(path.join(__dirname, 'gpu-texture-probe.html')).catch((error) => {
+    const probePage = path.join(__dirname, 'gpu-texture-probe.html');
+    logGpuTextureProbeEvent('probe_page_load_started', { page: probePage });
+    session.window.loadFile(probePage).catch((error) => {
+      logGpuTextureProbeEvent('probe_page_load_rejected', { message: error.message });
       finishGpuTextureProbe(session, 'error', `Не удалось открыть страницу GPU-теста: ${error.message}`);
     });
   });
@@ -480,6 +584,24 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('child-process-gone', (_event, details) => {
+  const session = gpuTextureProbeSession;
+  if (!session && details.type !== 'GPU') return;
+  logGpuTextureProbeEvent('electron_child_process_gone', {
+    type: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+    serviceName: details.serviceName,
+  });
+  if (session && details.type === 'GPU') {
+    finishGpuTextureProbe(
+      session,
+      'error',
+      `GPU-процесс Electron завершился: ${details.reason} (${details.exitCode}).`
+    );
+  }
 });
 
 app.on('before-quit', () => {
