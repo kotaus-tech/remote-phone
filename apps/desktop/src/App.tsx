@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { CameraHostStatus, GpuTextureProbeStatus, PairingDevice, PairingStatus } from './remotePhone';
+import { RtcCameraSession } from './rtcCameraSession';
+import type { CameraTransportStatus } from './rtcCameraSession';
 
 type PageKey = 'devices' | 'screen' | 'camera' | 'settings' | 'diagnostics';
 
@@ -29,9 +31,9 @@ const headings: Record<PageKey, { eyebrow: string; title: string; description: s
     description: 'Предпросмотр и управление появятся после настройки защищённого соединения.',
   },
   camera: {
-    eyebrow: 'Тестовая камера Windows',
+    eyebrow: 'Виртуальная камера Windows',
     title: 'Веб-камера',
-    description: 'При запуске приложения включается тестовая камера с движущимся счётчиком. Оставьте приложение открытым во время проверки.',
+    description: 'После PIN-сопряжения приложение пытается установить WebRTC-видеоканал. До подтверждённого поступления кадров остаётся синтетический резервный поток.',
   },
   settings: {
     eyebrow: 'Настройки',
@@ -55,6 +57,10 @@ function App() {
   const [cameraStatus, setCameraStatus] = useState<CameraHostStatus>({
     phase: 'starting',
     message: 'Тестовая виртуальная камера запускается вместе с приложением…',
+  });
+  const [cameraTransportStatus, setCameraTransportStatus] = useState<CameraTransportStatus>({
+    phase: 'idle',
+    message: 'Подключите телефон по PIN, чтобы начать передачу живого видео.',
   });
   const [gpuTextureProbeStatus, setGpuTextureProbeStatus] = useState<GpuTextureProbeStatus>({
     phase: 'idle',
@@ -106,6 +112,34 @@ function App() {
       removeStatusListener();
     };
   }, []);
+
+  useEffect(() => {
+    const api = window.remotePhone;
+    if (!api || pairingStatus.phase !== 'authenticated') {
+      setCameraTransportStatus({
+        phase: 'idle',
+        message: 'Подключите телефон по PIN, чтобы начать передачу живого видео.',
+      });
+      return;
+    }
+
+    let active = true;
+    const session = new RtcCameraSession(api, (nextStatus) => {
+      if (active) setCameraTransportStatus(nextStatus);
+    });
+    const removeSignalListener = api.onRtcSignal((signal) => {
+      void session.handleSignal(signal);
+    });
+    void session.start().catch(() => {
+      // The session publishes a localized error state itself.
+    });
+
+    return () => {
+      active = false;
+      removeSignalListener();
+      session.stop();
+    };
+  }, [pairingStatus.phase]);
 
   async function runGpuTextureProbe() {
     const api = window.remotePhone;
@@ -184,7 +218,7 @@ function App() {
           </div>
           {page === 'devices' && <DevicesPage devices={devices} status={pairingStatus} onStatusChange={setPairingStatus} />}
           {page === 'screen' && <ScreenPage connected={connected} />}
-          {page === 'camera' && <CameraPage status={cameraStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
+          {page === 'camera' && <CameraPage status={cameraStatus} transport={cameraTransportStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
           {page === 'settings' && <SettingsPage />}
           {page === 'diagnostics' && <DiagnosticsPage />}
         </main>
@@ -379,10 +413,12 @@ function ScreenPage({ connected }: { connected: boolean }) {
 
 function CameraPage({
   status,
+  transport,
   gpuTextureProbe,
   onRunGpuTextureProbe,
 }: {
   status: CameraHostStatus;
+  transport: CameraTransportStatus;
   gpuTextureProbe: GpuTextureProbeStatus;
   onRunGpuTextureProbe: () => void;
 }) {
@@ -401,16 +437,17 @@ function CameraPage({
     <section className="camera-layout">
       <article className="panel camera-panel">
         <div className="preview-toolbar">
-          <span>СИНТЕТИЧЕСКИЙ ПОТОК · NV12</span>
+          <span>CPU-ПОТОК · NV12</span>
           <span className={`camera-state ${status.phase}`} role="status">{statusLabel}</span>
         </div>
         <div className={`camera-stage ${isRunning ? 'camera-stage-ready' : ''}`} aria-live="polite">
           <div className="camera-status-icon" aria-hidden="true">◉</div>
-          <strong>{isRunning ? 'Камера запущена' : statusLabel}</strong>
-          <span>{status.message}</span>
+          <strong>{transport.phase === 'receiving' ? 'Отправка NV12-кадров в host-процесс' : isRunning ? 'Виртуальная камера запущена' : statusLabel}</strong>
+          <span>{transport.message}</span>
+          {transport.width && transport.height && <span>Источник: {transport.width}×{transport.height} NV12 · кадров: {transport.frames ?? 0}</span>}
         </div>
         <div className="camera-actions-note">
-          Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Само приложение не показывает второй предпросмотр.
+          Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Пока телефон не подключён, виртуальная камера выдаёт резервный синтетический кадр.
         </div>
         <section className={`gpu-probe-panel ${gpuTextureProbe.phase}`} aria-live="polite">
           <div className="gpu-probe-heading">
@@ -427,7 +464,7 @@ function CameraPage({
               {gpuTextureProbe.phase === 'running' ? 'Проверяем…' : 'Запустить проверку'}
             </button>
           </div>
-          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не видеопоток телефона и не его сквозную задержку. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной выбранный путь при интеграции — VideoFrame.copyTo → NV12 → shared memory; он ещё не реализован. Переключаться на GPU можно только после честного сравнения обоих трактов.</p>
+          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не сквозную задержку телефона. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной путь CPU → VideoFrame.copyTo → NV12 → shared memory уже подключается; преимуществ GPU пока не доказано. Переключаться можно только после сравнения обоих трактов на тех же разрешении и частоте.</p>
           {(gpuTextureProbe.frameCount ?? 0) > 0 && (
             <div className="gpu-probe-metrics">
               <span>Размер <strong>{gpuTextureProbe.width}×{gpuTextureProbe.height}</strong></span>

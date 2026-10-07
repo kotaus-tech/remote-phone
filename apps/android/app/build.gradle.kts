@@ -61,6 +61,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("org.java-websocket:Java-WebSocket:1.6.0")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

@@ -13,11 +13,13 @@ import org.java_websocket.drafts.Draft_6455
 import org.java_websocket.extensions.IExtension
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
+import org.json.JSONObject
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.UUID
@@ -25,6 +27,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 private const val MAX_FRAME_BYTES = 256 * 1024
+private const val MAX_RTC_SIGNAL_BYTES = 192 * 1024
+private const val MAX_RTC_SDP_BYTES = 160 * 1024
+private const val MAX_RTC_CANDIDATE_BYTES = 8192
+private const val MAX_RTC_MID_BYTES = 256
 private const val SESSION_LIFETIME_SECONDS = 5 * 60
 private const val SERVICE_TYPE = "_remotephone._tcp."
 private const val LOG_TAG = "RemotePhonePairing"
@@ -64,6 +70,8 @@ internal class PhonePairingHost(
         Thread(runnable, "remote-phone-pairing").apply { isDaemon = true }
     }
     private val lock = Any()
+    private val cameraPeerLock = Any()
+    private val signalCipherLock = Any()
 
     @Volatile private var state = PhonePairingState()
     @Volatile private var handle = 0L
@@ -74,6 +82,8 @@ internal class PhonePairingHost(
     @Volatile private var serviceRegistered = false
     @Volatile private var expiryAtElapsedRealtime = 0L
     @Volatile private var lastFailureMessage: String? = null
+    @Volatile private var cameraEnabled = false
+    @Volatile private var cameraPeer: PhoneCameraWebRtc? = null
     @Volatile private var closed = false
 
     private val countdownTask = object : Runnable {
@@ -92,11 +102,15 @@ internal class PhonePairingHost(
 
     fun currentState(): PhonePairingState = state
 
-    fun start() {
+    fun start(cameraEnabled: Boolean = false) {
         if (closed || state.phase !in setOf(PhonePairingPhase.IDLE, PhonePairingPhase.CLOSED, PhonePairingPhase.FAILED, PhonePairingPhase.EXPIRED, PhonePairingPhase.LOCKED)) {
             return
         }
-        publish(PhonePairingState(phase = PhonePairingPhase.STARTING, message = "Создаём PIN и защищённый сеанс…"))
+        this.cameraEnabled = cameraEnabled
+        publish(PhonePairingState(
+            phase = PhonePairingPhase.STARTING,
+            message = if (cameraEnabled) "Запрашиваем PIN и готовим передачу с камеры…" else "Создаём PIN и защищённый сеанс…"
+        ))
         worker.execute {
             val createStarted = SystemClock.elapsedRealtime()
             try {
@@ -226,6 +240,11 @@ internal class PhonePairingHost(
 
     private fun stopInternal(finalPhase: PhonePairingPhase, finalMessage: String) {
         mainHandler.removeCallbacks(countdownTask)
+        val peerToClose = synchronized(cameraPeerLock) {
+            cameraEnabled = false
+            cameraPeer.also { cameraPeer = null }
+        }
+        peerToClose?.close()
         val currentServer = server
         server = null
         if (currentServer != null) {
@@ -244,15 +263,19 @@ internal class PhonePairingHost(
         handle = 0L
         pinForUi = null
         expiryAtElapsedRealtime = 0L
-        if (oldHandle != 0L) runCatching { NativePairing.phoneDestroy(oldHandle) }
+        if (oldHandle != 0L) runCatching {
+            synchronized(signalCipherLock) { NativePairing.phoneDestroy(oldHandle) }
+        }
         publish(PhonePairingState(phase = finalPhase, message = finalMessage))
     }
 
     private fun safeAttemptsUsed(): Int {
         val currentHandle = handle
         if (currentHandle == 0L) return 0
-        return runCatching { NativePairing.phoneAttemptsUsed(currentHandle).coerceAtLeast(0) }
-            .getOrDefault(0)
+        return synchronized(signalCipherLock) {
+            runCatching { NativePairing.phoneAttemptsUsed(currentHandle).coerceAtLeast(0) }
+                .getOrDefault(0)
+        }
     }
 
     private fun publish(next: PhonePairingState) {
@@ -310,6 +333,115 @@ internal class PhonePairingHost(
         return true
     }
 
+    private fun parseRtcSignal(payload: ByteArray): JSONObject {
+        if (payload.isEmpty() || payload.size > MAX_RTC_SIGNAL_BYTES) {
+            throw IllegalArgumentException("RTC_SIGNAL_SIZE")
+        }
+        val jsonText = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(payload))
+            .toString()
+        val signal = JSONObject(jsonText)
+        val version = signal.opt("v") as? Number
+        if (version == null || version.toDouble() != 1.0) throw IllegalArgumentException("RTC_SIGNAL_VERSION")
+
+        when (signal.optString("type")) {
+            "offer" -> {
+                val sdp = signal.opt("sdp") as? String ?: throw IllegalArgumentException("RTC_SDP")
+                if (sdp.isBlank() || sdp.toByteArray(StandardCharsets.UTF_8).size > MAX_RTC_SDP_BYTES) {
+                    throw IllegalArgumentException("RTC_SDP_SIZE")
+                }
+            }
+            "ice" -> {
+                val candidate = signal.opt("candidate") as? String ?: throw IllegalArgumentException("RTC_ICE")
+                if (candidate.isBlank() || candidate.toByteArray(StandardCharsets.UTF_8).size > MAX_RTC_CANDIDATE_BYTES) {
+                    throw IllegalArgumentException("RTC_ICE_SIZE")
+                }
+                val mid = signal.opt("sdpMid")
+                if (mid != null && mid !== JSONObject.NULL
+                    && (mid !is String || mid.toByteArray(StandardCharsets.UTF_8).size > MAX_RTC_MID_BYTES)) {
+                    throw IllegalArgumentException("RTC_MID")
+                }
+                val lineIndex = signal.opt("sdpMLineIndex")
+                if (lineIndex != null && lineIndex !== JSONObject.NULL) {
+                    val numeric = lineIndex as? Number ?: throw IllegalArgumentException("RTC_MLINE")
+                    val index = numeric.toInt()
+                    if (index !in 0..255 || numeric.toDouble() != index.toDouble()) {
+                        throw IllegalArgumentException("RTC_MLINE")
+                    }
+                }
+            }
+            "bye" -> Unit
+            "error" -> {
+                val code = signal.opt("code") as? String ?: throw IllegalArgumentException("RTC_ERROR")
+                if (!code.matches(Regex("[A-Z0-9_]{1,48}"))) throw IllegalArgumentException("RTC_ERROR")
+            }
+            else -> throw IllegalArgumentException("RTC_SIGNAL_TYPE")
+        }
+        return signal
+    }
+
+    private fun handleRtcSignal(connection: WebSocket, pairingHandle: Long, signal: JSONObject) {
+        val type = signal.optString("type")
+        if (type == "bye" || type == "error") {
+            val peerToClose = synchronized(cameraPeerLock) {
+                if (connection !== activeConnection || handle != pairingHandle) return
+                cameraPeer.also { cameraPeer = null }
+            }
+            peerToClose?.close()
+            return
+        }
+
+        synchronized(cameraPeerLock) {
+            if (connection !== activeConnection || handle != pairingHandle) return
+            if (!cameraEnabled) {
+                if (type == "offer") {
+                    sendEncryptedRtcSignal(
+                        connection,
+                        pairingHandle,
+                        JSONObject().put("v", 1).put("type", "error").put("code", "CAMERA_NOT_ENABLED")
+                    )
+                    publish(state.copy(message = "Выберите режим «Веб-камера» и разрешите доступ к камере телефона."))
+                }
+                return
+            }
+            val session = cameraPeer ?: PhoneCameraWebRtc(
+                applicationContext,
+                sendSignal = { outgoing -> sendEncryptedRtcSignal(connection, pairingHandle, outgoing) },
+                onStatus = { message ->
+                    if (handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
+                        publish(state.copy(message = message))
+                    }
+                }
+            ).also { cameraPeer = it }
+            session.handleSignal(signal)
+        }
+    }
+
+    private fun sendEncryptedRtcSignal(connection: WebSocket, pairingHandle: Long, signal: JSONObject) {
+        val plaintext = signal.toString().toByteArray(StandardCharsets.UTF_8)
+        if (plaintext.isEmpty() || plaintext.size > MAX_RTC_SIGNAL_BYTES) {
+            plaintext.fill(0)
+            throw IllegalArgumentException("RTC_SIGNAL_SIZE")
+        }
+        val encrypted = try {
+            synchronized(signalCipherLock) {
+                if (connection !== activeConnection || handle != pairingHandle
+                    || !NativePairing.phoneIsAuthenticated(pairingHandle)) {
+                    throw IllegalStateException("RTC_SIGNAL_SESSION_CLOSED")
+                }
+                NativePairing.phoneEncryptSignal(pairingHandle, plaintext)
+                    ?: throw IllegalStateException("RTC_SIGNAL_ENCRYPTION_FAILED")
+            }
+        } finally {
+            plaintext.fill(0)
+        }
+        // Java-WebSocket may retain the backing array in its asynchronous write queue.
+        // This buffer is ciphertext; do not overwrite it before the network write completes.
+        connection.send(encrypted)
+    }
+
     private inner class PairingWebSocketServer(
         private val pairingHandle: Long,
         val serviceName: String
@@ -340,8 +472,13 @@ internal class PhonePairingHost(
                 lastFailureMessage = null
             }
             try {
-                val hello = NativePairing.phoneStartConnection(pairingHandle)
-                    ?: throw IllegalStateException("PAIRING_FAILED")
+                val hello = synchronized(signalCipherLock) {
+                    if (connection !== activeConnection || handle != pairingHandle) {
+                        throw IllegalStateException("PAIRING_FAILED")
+                    }
+                    NativePairing.phoneStartConnection(pairingHandle)
+                        ?: throw IllegalStateException("PAIRING_FAILED")
+                }
                 connection.send(hello)
                 publish(state.copy(phase = PhonePairingPhase.VERIFYING, message = "Компьютер подключён. Проверяем код…"))
             } catch (error: LinkageError) {
@@ -361,16 +498,35 @@ internal class PhonePairingHost(
             val frame = ByteArray(message.remaining())
             message.get(frame)
             try {
-                if (NativePairing.phoneIsAuthenticated(pairingHandle)) {
-                    val plaintext = NativePairing.phoneDecryptSignal(pairingHandle, frame)
-                        ?: throw IllegalStateException("PAIRING_FAILED")
-                    plaintext.fill(0)
+                val alreadyAuthenticated = synchronized(signalCipherLock) {
+                    if (connection !== activeConnection || handle != pairingHandle) return
+                    NativePairing.phoneIsAuthenticated(pairingHandle)
+                }
+                if (alreadyAuthenticated) {
+                    val plaintext = synchronized(signalCipherLock) {
+                        if (connection !== activeConnection || handle != pairingHandle) return
+                        NativePairing.phoneDecryptSignal(pairingHandle, frame)
+                            ?: throw IllegalStateException("PAIRING_FAILED")
+                    }
+                    try {
+                        val signal = parseRtcSignal(plaintext)
+                        handleRtcSignal(connection, pairingHandle, signal)
+                    } finally {
+                        plaintext.fill(0)
+                    }
                     return
                 }
-                val reply = NativePairing.phoneHandleFrame(pairingHandle, frame)
+                val handshakeResult = synchronized(signalCipherLock) {
+                    if (connection !== activeConnection || handle != pairingHandle) return
+                    val reply = NativePairing.phoneHandleFrame(pairingHandle, frame)
+                    val attempts = NativePairing.phoneAttemptsUsed(pairingHandle).coerceAtLeast(0)
+                    val authenticated = NativePairing.phoneIsAuthenticated(pairingHandle)
+                    Triple(reply, attempts, authenticated)
+                }
+                val reply = handshakeResult.first
+                val attempts = handshakeResult.second
                 if (reply != null) connection.send(reply)
-                val attempts = safeAttemptsUsed()
-                if (NativePairing.phoneIsAuthenticated(pairingHandle)) {
+                if (handshakeResult.third) {
                     publish(state.copy(
                         phase = PhonePairingPhase.AUTHENTICATED,
                         pin = null,
@@ -418,13 +574,18 @@ internal class PhonePairingHost(
                 if (connection !== activeConnection) return
                 activeConnection = null
             }
-            if (handle != pairingHandle) return
-            if (runCatching { NativePairing.phoneIsAuthenticated(pairingHandle) }.getOrDefault(false)) {
+            val authenticated = synchronized(signalCipherLock) {
+                if (handle != pairingHandle) return
+                runCatching { NativePairing.phoneIsAuthenticated(pairingHandle) }.getOrDefault(false)
+            }
+            if (authenticated) {
                 worker.execute {
                     stopInternal(PhonePairingPhase.CLOSED, "Защищённое соединение закрыто. Создайте новый PIN для следующего сеанса.")
                 }
             } else {
-                runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
+                synchronized(signalCipherLock) {
+                    if (handle == pairingHandle) runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
+                }
                 val attempts = safeAttemptsUsed()
                 if (attempts >= 5) {
                     worker.execute {
@@ -454,7 +615,9 @@ internal class PhonePairingHost(
 
         private fun failConnection(connection: WebSocket, message: String) {
             if (connection !== activeConnection) return
-            runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
+            synchronized(signalCipherLock) {
+                if (handle == pairingHandle) runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
+            }
             lastFailureMessage = message
             publish(state.copy(
                 phase = PhonePairingPhase.WAITING,

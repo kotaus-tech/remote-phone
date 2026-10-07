@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { PairingController } = require('./pairing.cjs');
+const { encodeNv12FramePacket } = require('./frame-pipe.cjs');
 
 let mainWindow = null;
 let pairingController = null;
@@ -10,6 +11,7 @@ let cameraHostProcess = null;
 let ipcReady = false;
 let appIsQuitting = false;
 let cameraHostError = '';
+let cameraFrameWritePending = false;
 let gpuTextureProbeSession = null;
 let gpuTextureProbeStatus = {
   phase: 'idle',
@@ -88,6 +90,9 @@ function startCameraHost() {
   child.stderr.on('data', (text) => {
     cameraHostError = (cameraHostError + text).slice(-2048).trim();
   });
+  child.stdin.on('error', (error) => {
+    cameraHostError = `stdin: ${error.message}`;
+  });
 
   child.once('error', (error) => {
     cameraHostError = error.message;
@@ -122,6 +127,56 @@ function stopCameraHost() {
   } catch {
     // The host may already have exited during application shutdown.
   }
+}
+
+function writeCameraNv12Frame(frame) {
+  if (!pairingController?.isAuthenticated()) {
+    return Promise.resolve({ ok: false, message: 'Сначала подключите телефон по PIN.' });
+  }
+  const child = cameraHostProcess;
+  const stdin = child?.stdin;
+  if (!child || child.exitCode !== null || !stdin || stdin.destroyed || stdin.writableEnded
+    || cameraStatus.phase !== 'running') {
+    return Promise.resolve({ ok: false, message: 'Виртуальная камера сейчас не готова принимать кадры.' });
+  }
+  if (cameraFrameWritePending) {
+    return Promise.resolve({ ok: true, dropped: true });
+  }
+
+  let packet;
+  try {
+    packet = encodeNv12FramePacket(frame);
+  } catch (error) {
+    return Promise.resolve({ ok: false, message: error.message });
+  }
+
+  cameraFrameWritePending = true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      stdin.removeListener('error', onError);
+      stdin.removeListener('close', onClose);
+      packet.fill(0);
+      cameraFrameWritePending = false;
+      if (error) {
+        cameraHostError = `stdin frame write: ${error.message || error}`;
+        resolve({ ok: false, message: 'Не удалось передать NV12-кадр виртуальной камере.' });
+        return;
+      }
+      resolve({ ok: true, dropped: false });
+    };
+    const onError = (error) => finish(error);
+    const onClose = () => finish(new Error('host stdin закрыт'));
+    stdin.once('error', onError);
+    stdin.once('close', onClose);
+    try {
+      stdin.write(packet, (error) => finish(error || null));
+    } catch (error) {
+      finish(error);
+    }
+  });
 }
 
 function getGpuTextureProbeProgramDataLogPath() {
@@ -574,6 +629,16 @@ function registerPairingIpc() {
     assertTrustedWindow(event);
     pairingController?.disconnect();
     return { ok: true };
+  });
+  ipcMain.handle('rtc:send-signal', (event, signal) => {
+    assertTrustedWindow(event);
+    return pairingController
+      ? pairingController.sendRtcSignal(signal)
+      : { ok: false, message: 'Сетевой адаптер пока не запущен.' };
+  });
+  ipcMain.handle('camera:write-nv12-frame', (event, frame) => {
+    assertTrustedWindow(event);
+    return writeCameraNv12Frame(frame);
   });
   ipcMain.handle('camera:get-status', (event) => {
     assertTrustedWindow(event);

@@ -1,9 +1,13 @@
 package tech.kotaus.remotephone
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -48,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import tech.kotaus.remotephone.ui.theme.Card as CardColor
 import tech.kotaus.remotephone.ui.theme.Elevated
@@ -79,18 +84,30 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class PhoneMode(val title: String, val description: String, val glyph: String) {
-    SCREEN("Экран", "Показывать экран телефона и управлять им с ПК", "▣"),
+    SCREEN("Экран", "Отключён: приложение не считывает содержимое экрана телефона", "▣"),
     CAMERA("Веб-камера", "Использовать камеру телефона в приложениях на ПК", "◉")
 }
 
 @Composable
 private fun StageTwoHome() {
     val context = LocalContext.current
-    var selectedMode by remember { mutableStateOf(PhoneMode.SCREEN) }
+    var selectedMode by remember { mutableStateOf(PhoneMode.CAMERA) }
     var allowControl by remember { mutableStateOf(false) }
     var pairingState by remember { mutableStateOf(PhonePairingState()) }
     val pairingHost = remember {
         PhonePairingHost(context.applicationContext) { nextState -> pairingState = nextState }
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            pairingHost.start(cameraEnabled = true)
+        } else {
+            pairingState = pairingState.copy(
+                phase = PhonePairingPhase.FAILED,
+                message = "Без разрешения камеры передача видео не запускается. Экран телефона не считывается."
+            )
+        }
     }
     DisposableEffect(pairingHost) {
         onDispose { pairingHost.close() }
@@ -213,7 +230,21 @@ private fun StageTwoHome() {
                 PhonePairingPhase.AUTHENTICATED
             )
             Button(
-                onClick = { if (sessionActive) pairingHost.stop() else pairingHost.start() },
+                onClick = {
+                    if (sessionActive) {
+                        pairingHost.stop()
+                    } else if (selectedMode == PhoneMode.CAMERA) {
+                        val cameraGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (cameraGranted) pairingHost.start(cameraEnabled = true)
+                        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    } else {
+                        // Экран телефона не считывается; этот пункт пока не запускает захват.
+                        pairingHost.start(cameraEnabled = false)
+                    }
+                },
                 enabled = pairingState.phase != PhonePairingPhase.STARTING,
                 modifier = Modifier.fillMaxWidth().height(50.dp),
                 shape = RoundedCornerShape(14.dp),

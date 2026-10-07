@@ -4,6 +4,7 @@ const path = require('node:path');
 const koffi = require('koffi');
 const WebSocket = require('ws');
 const { Bonjour } = require('bonjour-service');
+const { encodeRtcSignal, decodeRtcSignal } = require('./rtc-signaling.cjs');
 
 const MAX_FRAME_BYTES = 256 * 1024;
 const PIN_LENGTH = 8;
@@ -88,6 +89,11 @@ class PairingController {
 
   getDevices() {
     return [...this.devices.values()];
+  }
+
+  isAuthenticated() {
+    const connection = this.activeConnection;
+    return Boolean(connection?.authenticated && connection.socket.readyState === WebSocket.OPEN);
   }
 
   refreshDiscovery() {
@@ -224,9 +230,11 @@ class PairingController {
           plaintext,
           plaintext.length,
         ));
-        if (length < 0 || length > plaintext.length) {
+        if (length <= 0 || length > plaintext.length) {
           throw new Error('Не удалось проверить защищённую сигнализацию.');
         }
+        const signal = decodeRtcSignal(plaintext.subarray(0, length));
+        this.sendToRenderer('rtc:signal', signal);
       } finally {
         plaintext.fill(0);
       }
@@ -249,8 +257,40 @@ class PairingController {
       connection.authenticated = true;
       connection.stage = 'authenticated';
       clearTimeout(connection.timer);
-      this.sendStatus('authenticated', 'Сопряжение подтверждено. Передача изображения появится на следующем этапе.');
+      this.sendStatus('authenticated', 'PIN-сопряжение подтверждено. Настраиваем WebRTC-видеоканал; изображение ещё не подтверждено.');
       resolveOnce({ ok: true });
+    }
+  }
+
+  sendRtcSignal(signal) {
+    const connection = this.activeConnection;
+    if (!connection || !connection.authenticated || connection.handle === 0n
+      || connection.socket.readyState !== WebSocket.OPEN || !this.native) {
+      return { ok: false, message: 'Нет активного защищённого WebRTC-сеанса.' };
+    }
+
+    let plaintext;
+    const output = Buffer.alloc(MAX_FRAME_BYTES);
+    try {
+      plaintext = encodeRtcSignal(signal);
+      const length = Number(this.native.pcEncryptSignal(
+        connection.handle,
+        plaintext,
+        plaintext.length,
+        output,
+        output.length,
+      ));
+      if (!Number.isInteger(length) || length <= 0 || length > output.length) {
+        throw new Error('Не удалось зашифровать WebRTC-сигнализацию.');
+      }
+      this.sendNativeFrame(connection, output, length);
+      return { ok: true };
+    } catch (_error) {
+      this.fail(connection, 'Не удалось отправить защищённую WebRTC-сигнализацию.');
+      return { ok: false, message: 'Не удалось отправить защищённую WebRTC-сигнализацию.' };
+    } finally {
+      plaintext?.fill(0);
+      output.fill(0);
     }
   }
 
