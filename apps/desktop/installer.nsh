@@ -9,10 +9,10 @@
     Abort "Не удалось создать журнал виртуальной камеры в ProgramData."
   FileClose $0
 
-  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs" /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" "*S-1-5-20:(OI)(CI)M" "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q' $0
+  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" "*S-1-5-20:(OI)(CI)M" "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q' $0
   StrCmp $0 0 +2
     Abort "Не удалось настроить права каталога журнала в ProgramData."
-  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" /grant:r "*S-1-5-18:F" "*S-1-5-19:M" "*S-1-5-20:M" "*S-1-5-32-545:(R,AD)" /C /Q' $0
+  ExecWait '"$SYSDIR\icacls.exe" "$APPDATA\Kotaus\RemotePhone\logs\VirtualCameraMediaSource.log" /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" "*S-1-5-19:M" "*S-1-5-20:M" "*S-1-5-32-545:(R,W)" /C /Q' $0
   StrCmp $0 0 +2
     Abort "Не удалось настроить права записи службы на журнал в ProgramData."
 

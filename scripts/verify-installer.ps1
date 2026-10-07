@@ -101,9 +101,18 @@ try {
         $true,
         [System.Security.Principal.SecurityIdentifier])
     Assert-LogAccessRule -Rules $logDirectoryRules -Sid 'S-1-5-18' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::FullControl) -FriendlyName 'SYSTEM' -ObjectName $logDirectory
+    Assert-LogAccessRule -Rules $logDirectoryRules -Sid 'S-1-5-32-544' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::FullControl) -FriendlyName 'Administrators' -ObjectName $logDirectory
     Assert-LogAccessRule -Rules $logDirectoryRules -Sid 'S-1-5-19' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::Modify) -FriendlyName 'LocalService' -ObjectName $logDirectory
     Assert-LogAccessRule -Rules $logDirectoryRules -Sid 'S-1-5-20' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::Modify) -FriendlyName 'NetworkService' -ObjectName $logDirectory
     Assert-LogAccessRule -Rules $logDirectoryRules -Sid 'S-1-5-32-545' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) -FriendlyName 'Users' -ObjectName $logDirectory
+    $userDirectoryWriteRights = $logDirectoryRules | Where-Object {
+        $_.IdentityReference.Value -eq 'S-1-5-32-545' -and
+        $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+        (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Write) -ne 0)
+    }
+    if ($null -ne $userDirectoryWriteRights) {
+        throw "Users не должны иметь права записи в каталоге журнала ProgramData: $logDirectory"
+    }
 
     $logFileAcl = Get-Acl -LiteralPath $logPath
     $logFileRules = $logFileAcl.GetAccessRules(
@@ -111,9 +120,11 @@ try {
         $true,
         [System.Security.Principal.SecurityIdentifier])
     Assert-LogAccessRule -Rules $logFileRules -Sid 'S-1-5-18' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::FullControl) -FriendlyName 'SYSTEM' -ObjectName $logPath
+    Assert-LogAccessRule -Rules $logFileRules -Sid 'S-1-5-32-544' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::FullControl) -FriendlyName 'Administrators' -ObjectName $logPath
     Assert-LogAccessRule -Rules $logFileRules -Sid 'S-1-5-19' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::Modify) -FriendlyName 'LocalService' -ObjectName $logPath
     Assert-LogAccessRule -Rules $logFileRules -Sid 'S-1-5-20' -RequiredRights ([System.Security.AccessControl.FileSystemRights]::Modify) -FriendlyName 'NetworkService' -ObjectName $logPath
-    $userLogRights = [System.Security.AccessControl.FileSystemRights]::ReadData -bor [System.Security.AccessControl.FileSystemRights]::AppendData
+    # Node/libuv opens the pre-created log for generic file-write access; the directory itself remains non-writable.
+    $userLogRights = [System.Security.AccessControl.FileSystemRights]::ReadData -bor [System.Security.AccessControl.FileSystemRights]::Write
     Assert-LogAccessRule -Rules $logFileRules -Sid 'S-1-5-32-545' -RequiredRights $userLogRights -FriendlyName 'Users' -ObjectName $logPath
 
     $installedHash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash

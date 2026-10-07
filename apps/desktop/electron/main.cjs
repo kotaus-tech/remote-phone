@@ -124,14 +124,56 @@ function stopCameraHost() {
   }
 }
 
-function appendGpuTextureProbeLog(line) {
+function getGpuTextureProbeProgramDataLogPath() {
   const programData = process.env.ProgramData || process.env.PROGRAMDATA;
-  if (!programData) return;
-  const logPath = path.join(programData, 'Kotaus', 'RemotePhone', 'logs', 'VirtualCameraMediaSource.log');
+  if (!programData) return null;
+  return path.join(programData, 'Kotaus', 'RemotePhone', 'logs', 'VirtualCameraMediaSource.log');
+}
+
+function appendGpuTextureProbeFallback(record, programDataLogPath, programDataError) {
+  const errorDetails = {
+    code: programDataError?.code || 'UNKNOWN',
+    message: programDataError?.message || String(programDataError),
+  };
+  let fallbackPath = '<userData unavailable>';
+  let fallbackRecord = '';
+
   try {
-    fs.appendFileSync(logPath, `${new Date().toISOString()} electron_gpu_texture_probe ${line}\r\n`, 'utf8');
-  } catch {
-    // The installed product pre-creates this ProgramData log with append-only ACLs.
+    const fallbackDirectory = path.join(app.getPath('userData'), 'logs');
+    fallbackPath = path.join(fallbackDirectory, 'gpu-texture-probe.log');
+    fallbackRecord = `${record.trimEnd()} fallback_path=${JSON.stringify(fallbackPath)} program_data_path=${JSON.stringify(programDataLogPath)} program_data_error=${JSON.stringify(errorDetails)}\r\n`;
+    fs.mkdirSync(fallbackDirectory, { recursive: true });
+    fs.appendFileSync(fallbackPath, fallbackRecord, 'utf8');
+  } catch (fallbackError) {
+    try {
+      const message = fallbackRecord || `${record.trimEnd()} fallback_path=${JSON.stringify(fallbackPath)} program_data_path=${JSON.stringify(programDataLogPath)} program_data_error=${JSON.stringify(errorDetails)}`;
+      process.stderr.write(`${message.trimEnd()} fallback_error=${JSON.stringify({
+        code: fallbackError?.code || 'UNKNOWN',
+        message: fallbackError?.message || String(fallbackError),
+      })}\n`);
+    } catch {
+      // Diagnostics must not interrupt the GPU probe or application shutdown.
+    }
+  }
+}
+
+function appendGpuTextureProbeLog(line) {
+  const programDataLogPath = getGpuTextureProbeProgramDataLogPath();
+  const record = `${new Date().toISOString()} electron_gpu_texture_probe ${line}\r\n`;
+  if (!programDataLogPath) {
+    appendGpuTextureProbeFallback(record, null, Object.assign(
+      new Error('ProgramData environment variable is unavailable.'),
+      { code: 'PROGRAMDATA_UNAVAILABLE' },
+    ));
+    return;
+  }
+
+  try {
+    // The installer grants the application account the write rights Node/libuv needs on this file.
+    // The shared log directory itself remains read-only for standard users.
+    fs.appendFileSync(programDataLogPath, record, 'utf8');
+  } catch (programDataError) {
+    appendGpuTextureProbeFallback(record, programDataLogPath, programDataError);
   }
 }
 
