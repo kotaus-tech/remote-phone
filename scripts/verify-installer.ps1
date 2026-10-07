@@ -140,7 +140,7 @@ try {
     }
     else {
         $logLengthBeforeSmoke = (Get-Item -LiteralPath $logPath).Length
-        Write-Host 'Запуск Media Foundation smoke test: проверка типов NV12/RGB32 и захват кадров 1080p60…'
+        Write-Host 'Запуск Media Foundation smoke test: проверка типов NV12/RGB32 и захват кадров 4K30…'
         $smokeOutput = & $installedHost '--ci-smoke' 2>&1
         $smokeExitCode = $LASTEXITCODE
         # Preserve the child's status for explicit policy handling below; otherwise the runner may treat the expected E_ACCESSDENIED as a script failure.
@@ -203,8 +203,8 @@ try {
             if (-not [string]::Equals($loggedDllPath, [System.IO.Path]::GetFullPath($installedDll), [System.StringComparison]::OrdinalIgnoreCase)) {
                 throw "Источник загрузил DLL не из установленного Program Files: $loggedDllPath"
             }
-            $captureSmokeResult = 'пройден: режимы перечислены, захвачены меняющиеся кадры 1080p60'
-            Write-Host 'Media Foundation перечислил режимы, захватил меняющиеся кадры 1080p60 и записал идентификатор DLL/процесса.'
+            $captureSmokeResult = 'пройден: режимы перечислены, захвачены меняющиеся кадры 4K30'
+            Write-Host 'Media Foundation перечислил режимы, захватил меняющиеся кадры 4K30 и записал идентификатор DLL/процесса.'
         }
     }
 

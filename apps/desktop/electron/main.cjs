@@ -13,7 +13,7 @@ let cameraHostError = '';
 let gpuTextureProbeSession = null;
 let gpuTextureProbeStatus = {
   phase: 'idle',
-  message: 'GPU shared-texture мост ещё не проверен.',
+  message: 'Основной маршрут живой камеры — CPU → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
   frameCount: 0,
   uniqueFrames: 0,
   droppedFrames: 0,
@@ -319,7 +319,7 @@ function startGpuTextureProbe() {
     gpuTextureProbeSession = session;
     publishGpuTextureProbeStatus({
       phase: 'running',
-      message: 'Проверяем Electron GPU shared texture → D3D11; используется только hardware GPU, без CPU fallback.',
+      message: 'Снимаем диагностические метрики необязательного GPU shared-texture-кандидата; основной CPU-маршрут не меняется.',
       frameCount: 0,
       uniqueFrames: 0,
       droppedFrames: 0,
@@ -361,7 +361,7 @@ function startGpuTextureProbe() {
         finishGpuTextureProbe(
           session,
           'error',
-          'Electron не предоставил GPU shared texture (возможен CPU fallback или неподдерживаемый драйвер).'
+          'Electron не предоставил GPU shared texture; необязательный GPU-эксперимент недоступен, основной маршрут не блокируется.'
         );
         return;
       }
@@ -491,8 +491,8 @@ function startGpuTextureProbe() {
               session,
               passed ? 'passed' : 'error',
               passed
-                ? `GPU texture gate пройден: ${session.frameCount} кадров, ${session.hashes.size} уникальных, ${observedFps} кадров/с; средний D3D11 readback ${Number((session.totalReadbackMs / session.frameCount).toFixed(2))} мс.`
-                : `GPU texture gate не пройден: получено ${session.frameCount} кадров и ${session.hashes.size} уникальных за ${Number(elapsedSeconds.toFixed(1))} с.`,
+                ? `GPU-проба технически получила ${session.frameCount} кадров (${session.hashes.size} разных, ${observedFps} кадров/с); средний D3D11 readback ${Number((session.totalReadbackMs / session.frameCount).toFixed(2))} мс. Это не доказывает выигрыш против CPU/NV12.`
+                : `GPU-проба не собрала стабильную последовательность: ${session.frameCount} кадров и ${session.hashes.size} разных за ${Number(elapsedSeconds.toFixed(1))} с. CPU-маршрут не блокируется.`,
             );
           }
         });

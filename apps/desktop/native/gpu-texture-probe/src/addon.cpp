@@ -94,18 +94,38 @@ HRESULT EnsureD3DDevice() {
 
 class ReadbackWorker final : public Napi::AsyncWorker {
 public:
-    ReadbackWorker(Napi::Env env, uintptr_t sharedHandle, UINT expectedWidth, UINT expectedHeight)
+    ReadbackWorker(
+        Napi::Env env,
+        uintptr_t sharedHandle,
+        UINT expectedWidth,
+        UINT expectedHeight,
+        bool lifecycleTest = false,
+        bool failLifecycleTest = false)
         : Napi::AsyncWorker(env),
           m_deferred(Napi::Promise::Deferred::New(env)),
           m_sharedHandle(sharedHandle),
           m_expectedWidth(expectedWidth),
-          m_expectedHeight(expectedHeight) {}
+          m_expectedHeight(expectedHeight),
+          m_lifecycleTest(lifecycleTest),
+          m_failLifecycleTest(failLifecycleTest) {}
 
     Napi::Promise Promise() const {
         return m_deferred.Promise();
     }
 
     void Execute() override {
+        if (m_lifecycleTest) {
+            if (m_failLifecycleTest) {
+                SetError("Synthetic GPU probe AsyncWorker lifecycle test failure");
+                return;
+            }
+            m_actualWidth = m_expectedWidth;
+            m_actualHeight = m_expectedHeight;
+            m_pixelHash = 0xA17A5EEDULL;
+            m_readbackMilliseconds = 0.0;
+            return;
+        }
+
         const auto start = std::chrono::steady_clock::now();
         const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool shouldUninitializeCom = SUCCEEDED(comResult);
@@ -146,12 +166,10 @@ public:
         result.Set("pixelHash", Napi::String::New(Env(), hashText));
         result.Set("readbackMs", Napi::Number::New(Env(), m_readbackMilliseconds));
         m_deferred.Resolve(result);
-        delete this;
     }
 
     void OnError(const Napi::Error& error) override {
         m_deferred.Reject(error.Value());
-        delete this;
     }
 
 private:
@@ -173,8 +191,8 @@ private:
         source->GetDesc(&description);
         if (description.Width != m_expectedWidth || description.Height != m_expectedHeight ||
             description.Width < 320 || description.Height < 180 ||
-            description.Width > 1920 || description.Height > 1080) {
-            m_error = "Shared texture dimensions changed or are outside 320x180..1920x1080";
+            description.Width > 3840 || description.Height > 2160) {
+            m_error = "Shared texture dimensions changed or are outside 320x180..3840x2160";
             return E_INVALIDARG;
         }
         if (description.SampleDesc.Count != 1 ||
@@ -216,8 +234,8 @@ private:
             return result;
         }
 
-        // Sample a grid rather than hashing the entire 1080p frame; this detects
-        // changing content while keeping the diagnostic readback bounded.
+        // Sample a grid rather than hashing every pixel of a 4K frame; this detects
+        // changing content while keeping CPU-side diagnostic work bounded.
         uint64_t hash = 14695981039346656037ULL;
         const UINT stepX = std::max<UINT>(1, description.Width / 128);
         const UINT stepY = std::max<UINT>(1, description.Height / 72);
@@ -244,6 +262,8 @@ private:
     uintptr_t m_sharedHandle;
     UINT m_expectedWidth;
     UINT m_expectedHeight;
+    bool m_lifecycleTest;
+    bool m_failLifecycleTest;
     UINT m_actualWidth = 0;
     UINT m_actualHeight = 0;
     uint64_t m_pixelHash = 0;
@@ -265,9 +285,9 @@ Napi::Value InspectSharedTexture(const Napi::CallbackInfo& info) {
     }
     const double widthValue = info[1].As<Napi::Number>().DoubleValue();
     const double heightValue = info[2].As<Napi::Number>().DoubleValue();
-    if (widthValue < 1 || widthValue > 1920 || heightValue < 1 || heightValue > 1080 ||
+    if (widthValue < 320 || widthValue > 3840 || heightValue < 180 || heightValue > 2160 ||
         std::floor(widthValue) != widthValue || std::floor(heightValue) != heightValue) {
-        Napi::RangeError::New(env, "Invalid shared-texture dimensions").ThrowAsJavaScriptException();
+        Napi::RangeError::New(env, "Shared-texture dimensions must be within 320x180..3840x2160").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -283,11 +303,35 @@ Napi::Value InspectSharedTexture(const Napi::CallbackInfo& info) {
     return promise;
 }
 
+#ifdef GPU_TEXTURE_PROBE_TESTING
+Napi::Value TestReadbackWorkerLifecycle(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() != 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected a boolean indicating whether the worker should reject")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const bool fail = info[0].As<Napi::Boolean>().Value();
+    auto* worker = new ReadbackWorker(env, 0, 640, 480, true, fail);
+    Napi::Promise promise = worker->Promise();
+    worker->Queue();
+    return promise;
+}
+#endif
+
 Napi::Object Initialize(Napi::Env env, Napi::Object exports) {
     exports.Set("inspectSharedTexture", Napi::Function::New(env, InspectSharedTexture));
+#ifdef GPU_TEXTURE_PROBE_TESTING
+    exports.Set("testReadbackWorkerLifecycle", Napi::Function::New(env, TestReadbackWorkerLifecycle));
+#endif
     return exports;
 }
 
 } // namespace
 
+#ifdef GPU_TEXTURE_PROBE_TESTING
+NODE_API_MODULE(gpu_texture_probe_lifecycle_test, Initialize)
+#else
 NODE_API_MODULE(gpu_texture_probe, Initialize)
+#endif

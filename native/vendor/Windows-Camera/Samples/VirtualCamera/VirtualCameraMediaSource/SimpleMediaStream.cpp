@@ -31,8 +31,10 @@ namespace
         const ULONGLONG bitsPerPixel = IsEqualGUID(mode.subtype, MFVideoFormat_NV12) ? 12ULL : 32ULL;
         const ULONGLONG bitRate =
             static_cast<ULONGLONG>(mode.width) * mode.height * bitsPerPixel * mode.framesPerSecond;
-        RETURN_HR_IF(E_INVALIDARG, bitRate > MAXDWORD);
-        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(bitRate)));
+        // MF_MT_AVG_BITRATE is UINT32; saturate the descriptive value rather than
+        // rejecting valid uncompressed NV12 4K60 (whose mathematical rate exceeds it).
+        const UINT32 averageBitRate = bitRate > MAXDWORD ? MAXDWORD : static_cast<UINT32>(bitRate);
+        RETURN_IF_FAILED(mediaType->SetUINT32(MF_MT_AVG_BITRATE, averageBitRate));
         return S_OK;
     }
 }
@@ -64,6 +66,8 @@ namespace winrt::WindowsSample::implementation
             { MFVideoFormat_NV12, 1280, 720, 60 },
             { MFVideoFormat_NV12, 1920, 1080, 30 },
             { MFVideoFormat_NV12, 1920, 1080, 60 },
+            { MFVideoFormat_NV12, 3840, 2160, 30 },
+            { MFVideoFormat_NV12, 3840, 2160, 60 },
             { MFVideoFormat_RGB32, 640, 480, 30 },
         };
         constexpr DWORD mediaTypeCount = static_cast<DWORD>(ARRAYSIZE(supportedModes));

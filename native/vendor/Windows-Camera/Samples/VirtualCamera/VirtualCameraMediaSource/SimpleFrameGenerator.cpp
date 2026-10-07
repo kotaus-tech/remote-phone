@@ -225,7 +225,7 @@ HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
     if (m_subType == MFVideoFormat_NV12)
     {
         RETURN_HR_IF(E_INVALIDARG, (m_width & 1) != 0 || (m_height & 1) != 0);
-        RETURN_HR_IF(E_INVALIDARG, m_width > 1920 || m_height > 1080);
+        RETURN_HR_IF(E_INVALIDARG, m_width > 3840 || m_height > 2160);
     }
     else
     {

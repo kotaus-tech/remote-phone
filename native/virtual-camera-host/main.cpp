@@ -25,10 +25,10 @@ using Microsoft::WRL::ComPtr;
 constexpr wchar_t kCameraFriendlyName[] = L"Видоискатель — тестовая камера";
 constexpr wchar_t kDiagnosticLogRelativePath[] = L"\\Kotaus\\RemotePhone\\logs\\VirtualCameraMediaSource.log";
 constexpr int kFrameCaptureCount = 5;
-constexpr UINT32 kSmokeWidth = 1920;
-constexpr UINT32 kSmokeHeight = 1080;
-constexpr UINT32 kSmokeFrameRate = 60;
-constexpr LONGLONG kSmokeSampleDuration100ns = 166667;
+constexpr UINT32 kSmokeWidth = 3840;
+constexpr UINT32 kSmokeHeight = 2160;
+constexpr UINT32 kSmokeFrameRate = 30;
+constexpr LONGLONG kSmokeSampleDuration100ns = 333333;
 
 struct SupportedMode {
     GUID subtype;
@@ -38,12 +38,14 @@ struct SupportedMode {
     const wchar_t* name;
 };
 
-constexpr size_t kSupportedModeCount = 5;
+constexpr size_t kSupportedModeCount = 7;
 const std::array<SupportedMode, kSupportedModeCount> kSupportedModes = {{
     { MFVideoFormat_NV12, 1280, 720, 30, L"NV12 1280x720@30" },
     { MFVideoFormat_NV12, 1280, 720, 60, L"NV12 1280x720@60" },
     { MFVideoFormat_NV12, 1920, 1080, 30, L"NV12 1920x1080@30" },
     { MFVideoFormat_NV12, 1920, 1080, 60, L"NV12 1920x1080@60" },
+    { MFVideoFormat_NV12, 3840, 2160, 30, L"NV12 3840x2160@30" },
+    { MFVideoFormat_NV12, 3840, 2160, 60, L"NV12 3840x2160@60" },
     { MFVideoFormat_RGB32, 640, 480, 30, L"RGB32 640x480@30" },
 }};
 
@@ -459,7 +461,7 @@ HRESULT RunMediaFoundationCaptureSmokeTest() {
         swprintf_s(
             summary,
             ARRAYSIZE(summary),
-            L"CI_CAMERA_SMOKE_CAPTURE_OK native_types=%lu mode=NV12 1920x1080@60 samples=%d sample_duration_100ns=%I64d\n",
+            L"CI_CAMERA_SMOKE_CAPTURE_OK native_types=%lu mode=NV12 3840x2160@30 samples=%d sample_duration_100ns=%I64d\n",
             static_cast<unsigned long>(nativeTypeCount),
             kFrameCaptureCount,
             static_cast<long long>(kSmokeSampleDuration100ns));

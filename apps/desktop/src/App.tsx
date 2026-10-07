@@ -58,7 +58,7 @@ function App() {
   });
   const [gpuTextureProbeStatus, setGpuTextureProbeStatus] = useState<GpuTextureProbeStatus>({
     phase: 'idle',
-    message: 'GPU shared-texture мост ещё не проверен.',
+    message: 'Основной маршрут живой камеры — CPU → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
   });
   const heading = headings[page];
 
@@ -113,7 +113,7 @@ function App() {
       setGpuTextureProbeStatus({ phase: 'error', message: 'GPU shared-texture проверка доступна только в приложении Windows.' });
       return;
     }
-    setGpuTextureProbeStatus({ phase: 'running', message: 'Проверяем D3D11 GPU shared-texture без CPU fallback…' });
+    setGpuTextureProbeStatus({ phase: 'running', message: 'Снимаем диагностические метрики необязательного GPU-кандидата…' });
     try {
       const nextStatus = await api.runGpuTextureProbe();
       setGpuTextureProbeStatus(nextStatus);
@@ -415,7 +415,7 @@ function CameraPage({
         <section className={`gpu-probe-panel ${gpuTextureProbe.phase}`} aria-live="polite">
           <div className="gpu-probe-heading">
             <div>
-              <strong>Техническая проверка GPU-моста</strong>
+              <strong>Необязательный GPU-эксперимент</strong>
               <span>{gpuTextureProbe.message}</span>
             </div>
             <button
@@ -427,7 +427,7 @@ function CameraPage({
               {gpuTextureProbe.phase === 'running' ? 'Проверяем…' : 'Запустить проверку'}
             </button>
           </div>
-          <p>Проверяется GPU shared texture Chromium → Direct3D 11 (D3D11). Это диагностический gate, не видеопоток телефона: кадр копируется в staging-текстуру, а на CPU хэшируется разреженная сетка пикселей. CPU-bitmap fallback отключён.</p>
+          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не видеопоток телефона и не его сквозную задержку. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной выбранный путь при интеграции — VideoFrame.copyTo → NV12 → shared memory; он ещё не реализован. Переключаться на GPU можно только после честного сравнения обоих трактов.</p>
           {(gpuTextureProbe.frameCount ?? 0) > 0 && (
             <div className="gpu-probe-metrics">
               <span>Размер <strong>{gpuTextureProbe.width}×{gpuTextureProbe.height}</strong></span>
@@ -446,7 +446,7 @@ function CameraPage({
         <h2>Проверка в приложениях Windows</h2>
         <p>Это ранний тест установки и видеопотока. В кадре должны двигаться полосы и обновляться крупный шестизначный счётчик.</p>
         <div className="divider" />
-        <div className="camera-note-row"><span>Режимы</span><strong>720p / 1080p · 30 / 60 fps</strong></div>
+        <div className="camera-note-row"><span>Режимы</span><strong>720p / 1080p / 4K · 30 / 60 fps</strong></div>
         <div className="camera-note-row"><span>Форматы</span><strong>NV12 · RGB32</strong></div>
         <div className="camera-note-row"><span>Завершение</span><strong>Закрыть «Видоискатель»</strong></div>
         <div className="camera-test-instructions">

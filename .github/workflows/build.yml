@@ -134,6 +134,23 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Стресс-тест нативного GPU AsyncWorker
+        working-directory: apps/desktop
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $output = & npm run test:gpu-probe-worker 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            $details = @($output | ForEach-Object { [string] $_ } | Select-Object -Last 20)
+            $message = ($details -join ' | ')
+            if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=GPU AsyncWorker stress test::$message"
+            exit $exitCode
+          }
+
       - name: Проверить desktop-тесты Windows
         working-directory: apps/desktop
         run: npm test

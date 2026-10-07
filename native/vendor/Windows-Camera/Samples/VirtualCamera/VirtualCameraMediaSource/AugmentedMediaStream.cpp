@@ -110,11 +110,11 @@ namespace winrt::WindowsSample::implementation
             // Check if this MediaType conforms to our heuristic we decided to filter with:
             // 1- is it a Video MediaType
             // 2- is it a NV12 subtype
-            // 3- is its width between [1, 1920] and its height between [1, 1080]
+            // 3- is its width between [1, 3840] and its height between [1, 2160]
             // 4- is its framerate less than or equal to 30 fps and above or equal to 15fps
             if (IsEqualGUID(majorType, MFMediaType_Video)
                 && IsEqualGUID(subtype, MFVideoFormat_NV12)
-                && ((width <= 1920 && width > 0) && (height <= 1080 && height > 0))
+                && ((width <= 3840 && width > 0) && (height <= 2160 && height > 0))
                 && (framerate <= 30 && framerate >= 15))
             {
                 DEBUG_MSG(L"Found a valid and compliant Mediatype=%u", i);
