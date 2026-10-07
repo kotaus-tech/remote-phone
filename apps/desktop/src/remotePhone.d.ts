@@ -20,6 +20,19 @@ export type CameraHostStatus = {
   message: string;
 };
 
+export type GpuTextureProbeStatus = {
+  phase: 'idle' | 'running' | 'passed' | 'error';
+  message: string;
+  frameCount?: number;
+  uniqueFrames?: number;
+  droppedFrames?: number;
+  observedFps?: number;
+  averageReadbackMs?: number;
+  maxReadbackMs?: number;
+  width?: number;
+  height?: number;
+};
+
 declare global {
   interface Window {
     remotePhone?: {
@@ -31,6 +44,9 @@ declare global {
       onStatus: (callback: (status: PairingStatus) => void) => () => void;
       getCameraStatus: () => Promise<CameraHostStatus>;
       onCameraStatus: (callback: (status: CameraHostStatus) => void) => () => void;
+      getGpuTextureProbeStatus: () => Promise<GpuTextureProbeStatus>;
+      runGpuTextureProbe: () => Promise<GpuTextureProbeStatus>;
+      onGpuTextureProbeStatus: (callback: (status: GpuTextureProbeStatus) => void) => () => void;
     };
   }
 }

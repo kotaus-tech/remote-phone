@@ -183,6 +183,17 @@ button:disabled { cursor: default; }
 .camera-test-instructions { display: grid; gap: 6px; margin-top: 14px; padding: 12px; border: 1px solid rgba(148,202,255,.13); border-radius: 11px; background: rgba(148,202,255,.035); }
 .camera-test-instructions strong { color: #d8e7f3; font-size: .79rem; font-weight: 630; }
 .camera-test-instructions span { color: var(--muted); font-size: .76rem; line-height: 1.55; }
+.gpu-probe-panel { display: grid; gap: 10px; margin-top: 14px; padding: 13px; border: 1px solid rgba(148,202,255,.15); border-radius: 12px; background: rgba(148,202,255,.035); }
+.gpu-probe-panel.passed { border-color: rgba(116,227,178,.25); background: rgba(116,227,178,.035); }
+.gpu-probe-panel.error { border-color: rgba(255,127,131,.25); background: rgba(255,127,131,.035); }
+.gpu-probe-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.gpu-probe-heading > div { min-width: 0; display: grid; gap: 5px; }
+.gpu-probe-heading strong { font-size: .81rem; font-weight: 630; }
+.gpu-probe-heading span { color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.gpu-probe-button { min-height: 34px; flex: 0 0 auto; padding: 0 10px; font-size: .75rem; }
+.gpu-probe-panel > p { max-width: none; margin: 0; color: var(--subtle); font-size: .73rem; line-height: 1.5; }
+.gpu-probe-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.06); color: var(--muted); font-size: .72rem; }
+.gpu-probe-metrics strong { color: #d8e3eb; font-weight: 600; }
 .settings-panel { overflow: hidden; }
 .setting-row { min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 17px; border-bottom: 1px solid rgba(255,255,255,.06); }
 .setting-row:last-child { border-bottom: 0; }

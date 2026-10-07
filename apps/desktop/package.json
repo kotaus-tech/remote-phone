@@ -8,8 +8,9 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "test": "node --test electron/pairing.test.cjs",
-    "start": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never"
+    "start": "npm run build && npm run build:gpu-probe && electron .",
+    "dist:win": "npm run build && npm run build:gpu-probe && electron-builder --win nsis --x64 --publish never",
+    "build:gpu-probe": "node-gyp rebuild --directory native/gpu-texture-probe --target=44.5.1 --dist-url=https://electronjs.org/headers --arch=x64 && node scripts/copy-gpu-probe.cjs"
   },
   "dependencies": {
     "bonjour-service": "1.4.4",
@@ -24,6 +25,8 @@
     "@vitejs/plugin-react": "6.1.2",
     "electron": "44.5.1",
     "electron-builder": "26.15.3",
+    "node-addon-api": "8.5.0",
+    "node-gyp": "12.4.0",
     "typescript": "5.9.2",
     "vite": "8.3.2"
   },

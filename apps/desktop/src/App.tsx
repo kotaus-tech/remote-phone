@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CameraHostStatus, PairingDevice, PairingStatus } from './remotePhone';
+import type { CameraHostStatus, GpuTextureProbeStatus, PairingDevice, PairingStatus } from './remotePhone';
 
 type PageKey = 'devices' | 'screen' | 'camera' | 'settings' | 'diagnostics';
 
@@ -56,6 +56,10 @@ function App() {
     phase: 'starting',
     message: 'Тестовая виртуальная камера запускается вместе с приложением…',
   });
+  const [gpuTextureProbeStatus, setGpuTextureProbeStatus] = useState<GpuTextureProbeStatus>({
+    phase: 'idle',
+    message: 'GPU shared-texture мост ещё не проверен.',
+  });
   const heading = headings[page];
 
   useEffect(() => {
@@ -63,16 +67,25 @@ function App() {
     if (!api) {
       setPairingStatus({ phase: 'unavailable', message: 'Сетевой адаптер доступен в приложении Windows.' });
       setCameraStatus({ phase: 'unavailable', message: 'Тестовая камера доступна в установленном приложении Windows.' });
+      setGpuTextureProbeStatus({ phase: 'error', message: 'GPU shared-texture проверка доступна только в установленном приложении Windows.' });
       return;
     }
     let active = true;
     const removeCameraStatusListener = api.onCameraStatus((nextStatus) => {
       if (active) setCameraStatus(nextStatus);
     });
+    const removeGpuProbeListener = api.onGpuTextureProbeStatus((nextStatus) => {
+      if (active) setGpuTextureProbeStatus(nextStatus);
+    });
     api.getCameraStatus().then((nextStatus) => {
       if (active) setCameraStatus(nextStatus);
     }).catch(() => {
       if (active) setCameraStatus({ phase: 'error', message: 'Не удалось получить состояние тестовой камеры.' });
+    });
+    api.getGpuTextureProbeStatus().then((nextStatus) => {
+      if (active) setGpuTextureProbeStatus(nextStatus);
+    }).catch(() => {
+      if (active) setGpuTextureProbeStatus({ phase: 'error', message: 'Не удалось получить состояние GPU shared-texture проверки.' });
     });
     const removeDevicesListener = api.onDevices((nextDevices) => {
       if (active) setDevices(nextDevices);
@@ -88,10 +101,26 @@ function App() {
     return () => {
       active = false;
       removeCameraStatusListener();
+      removeGpuProbeListener();
       removeDevicesListener();
       removeStatusListener();
     };
   }, []);
+
+  async function runGpuTextureProbe() {
+    const api = window.remotePhone;
+    if (!api) {
+      setGpuTextureProbeStatus({ phase: 'error', message: 'GPU shared-texture проверка доступна только в приложении Windows.' });
+      return;
+    }
+    setGpuTextureProbeStatus({ phase: 'running', message: 'Проверяем D3D11 GPU shared-texture без CPU fallback…' });
+    try {
+      const nextStatus = await api.runGpuTextureProbe();
+      setGpuTextureProbeStatus(nextStatus);
+    } catch {
+      setGpuTextureProbeStatus({ phase: 'error', message: 'Не удалось выполнить GPU shared-texture проверку.' });
+    }
+  }
 
   const connected = pairingStatus.phase === 'authenticated';
   const connectionLabel = connected
@@ -155,7 +184,7 @@ function App() {
           </div>
           {page === 'devices' && <DevicesPage devices={devices} status={pairingStatus} onStatusChange={setPairingStatus} />}
           {page === 'screen' && <ScreenPage connected={connected} />}
-          {page === 'camera' && <CameraPage status={cameraStatus} />}
+          {page === 'camera' && <CameraPage status={cameraStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
           {page === 'settings' && <SettingsPage />}
           {page === 'diagnostics' && <DiagnosticsPage />}
         </main>
@@ -348,7 +377,15 @@ function ScreenPage({ connected }: { connected: boolean }) {
   );
 }
 
-function CameraPage({ status }: { status: CameraHostStatus }) {
+function CameraPage({
+  status,
+  gpuTextureProbe,
+  onRunGpuTextureProbe,
+}: {
+  status: CameraHostStatus;
+  gpuTextureProbe: GpuTextureProbeStatus;
+  onRunGpuTextureProbe: () => void;
+}) {
   const isRunning = status.phase === 'running';
   const statusLabel = isRunning
     ? 'Камера запущена'
@@ -375,6 +412,34 @@ function CameraPage({ status }: { status: CameraHostStatus }) {
         <div className="camera-actions-note">
           Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Само приложение не показывает второй предпросмотр.
         </div>
+        <section className={`gpu-probe-panel ${gpuTextureProbe.phase}`} aria-live="polite">
+          <div className="gpu-probe-heading">
+            <div>
+              <strong>Техническая проверка GPU-моста</strong>
+              <span>{gpuTextureProbe.message}</span>
+            </div>
+            <button
+              className="secondary-button gpu-probe-button"
+              type="button"
+              onClick={onRunGpuTextureProbe}
+              disabled={gpuTextureProbe.phase === 'running'}
+            >
+              {gpuTextureProbe.phase === 'running' ? 'Проверяем…' : 'Запустить проверку'}
+            </button>
+          </div>
+          <p>Проверяется GPU shared texture Chromium → Direct3D 11 (D3D11). Это диагностический gate, не видеопоток телефона: кадр копируется в staging-текстуру, а на CPU хэшируется разреженная сетка пикселей. CPU-bitmap fallback отключён.</p>
+          {(gpuTextureProbe.frameCount ?? 0) > 0 && (
+            <div className="gpu-probe-metrics">
+              <span>Размер <strong>{gpuTextureProbe.width}×{gpuTextureProbe.height}</strong></span>
+              <span>Кадров <strong>{gpuTextureProbe.frameCount}</strong></span>
+              <span>Разных <strong>{gpuTextureProbe.uniqueFrames}</strong></span>
+              <span>Темп <strong>{gpuTextureProbe.observedFps} fps</strong></span>
+              <span>Средний readback <strong>{gpuTextureProbe.averageReadbackMs} мс</strong></span>
+              <span>Максимум <strong>{gpuTextureProbe.maxReadbackMs} мс</strong></span>
+              <span>Пропущено <strong>{gpuTextureProbe.droppedFrames}</strong></span>
+            </div>
+          )}
+        </section>
       </article>
       <aside className="panel camera-note">
         <div className="note-mark blue" aria-hidden="true">i</div>

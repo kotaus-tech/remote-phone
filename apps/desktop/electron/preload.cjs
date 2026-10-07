@@ -15,4 +15,7 @@ contextBridge.exposeInMainWorld('remotePhone', {
   onStatus: (callback) => subscribe('pairing:status', callback),
   getCameraStatus: () => ipcRenderer.invoke('camera:get-status'),
   onCameraStatus: (callback) => subscribe('camera:status', callback),
+  getGpuTextureProbeStatus: () => ipcRenderer.invoke('camera:get-gpu-probe-status'),
+  runGpuTextureProbe: () => ipcRenderer.invoke('camera:run-gpu-texture-probe'),
+  onGpuTextureProbeStatus: (callback) => subscribe('camera:gpu-texture-probe-status', callback),
 });

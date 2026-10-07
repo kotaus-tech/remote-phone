@@ -155,6 +155,16 @@ jobs:
             exit $exitCode
           }
 
+      - name: Проверить упаковку GPU shared-texture addon
+        shell: pwsh
+        run: |
+          $builtAddon = 'apps/desktop/native-runtime/gpu_texture_probe.node'
+          $packagedAddon = 'apps/desktop/release/win-unpacked/resources/native/gpu_texture_probe.node'
+          if (-not (Test-Path -LiteralPath $builtAddon)) { throw 'GPU shared-texture addon не собран.' }
+          if (-not (Test-Path -LiteralPath $packagedAddon)) { throw 'GPU shared-texture addon не попал в Windows-пакет.' }
+          if ((Get-Item -LiteralPath $packagedAddon).Length -lt 1024) { throw 'Упакованный GPU addon пуст или повреждён.' }
+          Get-FileHash -LiteralPath $packagedAddon -Algorithm SHA256 | Format-List
+
       - name: Проверить установку и удаление Setup.exe
         shell: pwsh
         run: |
