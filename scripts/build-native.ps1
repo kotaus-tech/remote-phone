@@ -89,6 +89,16 @@ if ($hostBuildExitCode -ne 0) {
 
 $mediaSourceDll = Join-Path $sourceOut 'VirtualCameraMediaSource.dll'
 $cameraHost = Join-Path $hostBuild 'Release\RemotePhone.VirtualCameraHost.exe'
+Write-Host 'Проверяется CPU NV12 shared-memory канал и масштабирование…'
+$frameTransportTestOutput = & $cameraHost '--cpu-frame-ring-self-test' 2>&1
+$frameTransportTestExitCode = $LASTEXITCODE
+$frameTransportTestOutput | ForEach-Object { Write-Host $_ }
+if ($frameTransportTestExitCode -ne 0) {
+    Stop-NativeBuild -Title 'CPU NV12 shared-memory self-test' -ExitCode $frameTransportTestExitCode -Output $frameTransportTestOutput
+}
+if (($frameTransportTestOutput -join "`n") -notmatch 'CPU_FRAME_CHANNEL_SELFTEST_PASS') {
+    throw 'CPU NV12 shared-memory self-test не подтвердил публикацию/чтение кадра.'
+}
 Write-Host 'Собирается C ABI мост pairing-core для Windows x64…'
 $pairingBuildOutput = & cargo build --manifest-path (Join-Path $repoRoot 'native\Cargo.toml') --package remote-phone-pairing-bridge --release --locked 2>&1
 $pairingBuildExitCode = $LASTEXITCODE

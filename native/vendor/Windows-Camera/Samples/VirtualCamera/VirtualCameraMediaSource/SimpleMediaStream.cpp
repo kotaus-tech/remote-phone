@@ -45,7 +45,9 @@ namespace winrt::WindowsSample::implementation
             _In_ SimpleMediaSource* pSource,
             _In_ DWORD dwStreamId,
             _In_ MFSampleAllocatorUsage allocatorUsage,
-            _In_opt_z_ PCWSTR diagnosticLogPath
+            _In_opt_z_ PCWSTR diagnosticLogPath,
+            _In_opt_z_ PCWSTR frameChannelName,
+            _In_opt_z_ PCWSTR frameChannelUserSid
         )
     {
         winrt::slim_lock_guard lock(m_Lock);
@@ -59,6 +61,34 @@ namespace winrt::WindowsSample::implementation
         m_dwStreamId = dwStreamId;
         m_allocatorUsage = allocatorUsage;
         m_diagnosticLogPath = diagnosticLogPath == nullptr ? L"" : diagnosticLogPath;
+        m_frameChannelName = frameChannelName == nullptr ? L"" : frameChannelName;
+        m_frameChannelUserSid = frameChannelUserSid == nullptr ? L"" : frameChannelUserSid;
+        if (!m_frameChannelName.empty() && !m_frameChannelUserSid.empty())
+        {
+            const HRESULT channelResult = m_sharedFrames.OpenForMediaSource(
+                m_frameChannelName,
+                m_frameChannelUserSid);
+            if (channelResult == S_OK)
+            {
+                WriteMediaSourceDiagnostic(
+                    m_diagnosticLogPath.c_str(),
+                    L"shared_nv12_channel opened=1 version=%u",
+                    static_cast<unsigned>(remotephone::frame::kFrameChannelVersion));
+            }
+            else if (FAILED(channelResult))
+            {
+                WriteMediaSourceDiagnostic(
+                    m_diagnosticLogPath.c_str(),
+                    L"shared_nv12_channel_open_failed hresult=0x%08X",
+                    static_cast<unsigned>(channelResult));
+            }
+            else
+            {
+                WriteMediaSourceDiagnostic(
+                    m_diagnosticLogPath.c_str(),
+                    L"shared_nv12_channel waiting_for_frame_server=1");
+            }
+        }
 
         const SupportedMode supportedModes[] =
         {
@@ -295,7 +325,40 @@ namespace winrt::WindowsSample::implementation
             &bufferStart,
             &bufferLength)));
 
-        RETURN_IF_FAILED(logFailure(L"CreateFrame", m_spFrameGenerator->CreateFrame(pbuf, bufferLength, pitch, m_rgbMask)));
+        UINT64 sourceTimestampNs = 0;
+        ULONGLONG sourceSequence = 0;
+        HRESULT liveFrameResult = S_FALSE;
+        if (m_mediaTypeIsNv12 && !m_frameChannelName.empty())
+        {
+            liveFrameResult = m_sharedFrames.CopyLatestNv12(
+                m_mediaTypeWidth,
+                m_mediaTypeHeight,
+                pbuf,
+                bufferLength,
+                pitch,
+                &sourceTimestampNs,
+                &sourceSequence);
+        }
+
+        if (liveFrameResult == S_OK)
+        {
+            if (!m_liveFrameDiagnosticsWritten)
+            {
+                WriteMediaSourceDiagnostic(
+                    m_diagnosticLogPath.c_str(),
+                    L"shared_nv12_frame first=1 sequence=%I64u timestamp_ns=%I64u mode=%ux%u",
+                    static_cast<unsigned long long>(sourceSequence),
+                    static_cast<unsigned long long>(sourceTimestampNs),
+                    static_cast<unsigned>(m_mediaTypeWidth),
+                    static_cast<unsigned>(m_mediaTypeHeight));
+                m_liveFrameDiagnosticsWritten = true;
+            }
+        }
+        else
+        {
+            const HRESULT fallbackResult = m_spFrameGenerator->CreateFrame(pbuf, bufferLength, pitch, m_rgbMask);
+            RETURN_IF_FAILED(logFailure(L"CreateSyntheticFallback", fallbackResult));
+        }
         //RETURN_IF_FAILED(WriteSampleData(pbuf, bufferLength, pitch, NUM_IMAGE_COLS, NUM_IMAGE_ROWS));
         RETURN_IF_FAILED(logFailure(L"Unlock2D", buffer2D->Unlock2D()));
 
@@ -566,10 +629,14 @@ namespace winrt::WindowsSample::implementation
                 RETURN_IF_FAILED(MFCreateVideoSampleAllocatorEx(IID_PPV_ARGS(&m_spSampleAllocator)));
             }
 
-            UINT32 width, height;
-            GUID subType;
+            UINT32 width = 0;
+            UINT32 height = 0;
+            GUID subType = GUID_NULL;
             RETURN_IF_FAILED(m_spMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
-            MFGetAttributeSize(m_spMediaType.get(), MF_MT_FRAME_SIZE, &width, &height);
+            RETURN_IF_FAILED(MFGetAttributeSize(m_spMediaType.get(), MF_MT_FRAME_SIZE, &width, &height));
+            m_mediaTypeIsNv12 = IsEqualGUID(subType, MFVideoFormat_NV12) != FALSE;
+            m_mediaTypeWidth = width;
+            m_mediaTypeHeight = height;
 
             DEBUG_MSG(L"Initialize sample allocator for mediatype: %s, %dx%d ", winrt::to_hstring(subType).data(), width, height);
             RETURN_IF_FAILED(m_spSampleAllocator->InitializeSampleAllocator(10, m_spMediaType.get()));

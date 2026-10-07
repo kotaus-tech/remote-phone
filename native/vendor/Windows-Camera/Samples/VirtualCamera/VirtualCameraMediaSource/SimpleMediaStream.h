@@ -9,6 +9,7 @@
 
 #include "SimpleMediaSource.h"
 #include "VirtualCameraMediaSource.h"
+#include "SharedNv12FrameBuffer.h"
 
 namespace winrt::WindowsSample::implementation
 {
@@ -37,7 +38,9 @@ namespace winrt::WindowsSample::implementation
             _In_ SimpleMediaSource* pSource,
             _In_ DWORD streamId,
             _In_ MFSampleAllocatorUsage allocatorUsage,
-            _In_opt_z_ PCWSTR diagnosticLogPath);
+            _In_opt_z_ PCWSTR diagnosticLogPath,
+            _In_opt_z_ PCWSTR frameChannelName,
+            _In_opt_z_ PCWSTR frameChannelUserSid);
         HRESULT Start(_In_ IMFMediaType* pMediaType);
         HRESULT Stop(_In_ bool fSendEvent);
         HRESULT Shutdown();
@@ -68,6 +71,13 @@ namespace winrt::WindowsSample::implementation
         wistd::unique_ptr<SimpleFrameGenerator> m_spFrameGenerator;
         wil::com_ptr_nothrow<IMFMediaType> m_spMediaType;
         std::wstring m_diagnosticLogPath;
+        std::wstring m_frameChannelName;
+        std::wstring m_frameChannelUserSid;
+        remotephone::frame::SharedNv12FrameBuffer m_sharedFrames;
+        bool m_liveFrameDiagnosticsWritten = false;
+        bool m_mediaTypeIsNv12 = false;
+        UINT32 m_mediaTypeWidth = 0;
+        UINT32 m_mediaTypeHeight = 0;
         ULONGLONG m_requestWindowStart = 0;
         ULONGLONG m_lastRequestTime = 0;
         ULONGLONG m_requestWindowSampleCount = 0;

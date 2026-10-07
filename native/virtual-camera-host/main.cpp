@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <knownfolders.h>
+#include <sddl.h>
+#include <aclapi.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -12,10 +14,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
-#include <iostream>
 #include <string>
+#include <vector>
 
+#include "SharedNv12FrameBuffer.h"
 #include "VirtualCameraMediaSource.h"
 
 namespace {
@@ -29,6 +33,192 @@ constexpr UINT32 kSmokeWidth = 3840;
 constexpr UINT32 kSmokeHeight = 2160;
 constexpr UINT32 kSmokeFrameRate = 30;
 constexpr LONGLONG kSmokeSampleDuration100ns = 333333;
+constexpr UINT32 kFramePipeMaxBytes =
+    kSmokeWidth * kSmokeHeight * 3U / 2U;
+
+void WriteWideText(DWORD standardHandle, const wchar_t* text);
+
+enum class FramePipeReadStatus {
+    Frame,
+    EndOfStream,
+    Invalid
+};
+
+enum class PipeReadExactStatus {
+    Complete,
+    EndOfStream,
+    Failed
+};
+
+bool IsValidFramePipeHeader(const remotephone::frame::Nv12FramePipeHeader& header) {
+    return header.magic == remotephone::frame::kNv12FramePipeMagic
+        && header.version == 1
+        && header.headerBytes == sizeof(remotephone::frame::Nv12FramePipeHeader)
+        && header.flags == 0
+        && remotephone::frame::IsValidNv12FrameDimensions(header.width, header.height)
+        && header.payloadBytes == remotephone::frame::Nv12FrameByteLength(header.width, header.height)
+        && header.payloadBytes <= kFramePipeMaxBytes;
+}
+
+PipeReadExactStatus ReadPipeExact(HANDLE pipe, BYTE* destination, DWORD byteCount, bool allowCleanEof) {
+    DWORD totalRead = 0;
+    while (totalRead < byteCount) {
+        DWORD bytesRead = 0;
+        if (!ReadFile(pipe, destination + totalRead, byteCount - totalRead, &bytesRead, nullptr)) {
+            const DWORD error = GetLastError();
+            if (allowCleanEof && totalRead == 0 && error == ERROR_BROKEN_PIPE) {
+                return PipeReadExactStatus::EndOfStream;
+            }
+            return PipeReadExactStatus::Failed;
+        }
+        if (bytesRead == 0) {
+            return totalRead == 0 && allowCleanEof
+                ? PipeReadExactStatus::EndOfStream
+                : PipeReadExactStatus::Failed;
+        }
+        totalRead += bytesRead;
+    }
+    return PipeReadExactStatus::Complete;
+}
+
+FramePipeReadStatus ReadFramePipePacket(
+    HANDLE pipe,
+    remotephone::frame::Nv12FramePipeHeader* header,
+    std::vector<BYTE>* payload) {
+    if (header == nullptr || payload == nullptr) {
+        return FramePipeReadStatus::Invalid;
+    }
+    std::array<BYTE, sizeof(remotephone::frame::Nv12FramePipeHeader)> headerBytes{};
+    const PipeReadExactStatus headerStatus = ReadPipeExact(
+        pipe,
+        headerBytes.data(),
+        static_cast<DWORD>(headerBytes.size()),
+        true);
+    if (headerStatus == PipeReadExactStatus::EndOfStream) {
+        return FramePipeReadStatus::EndOfStream;
+    }
+    if (headerStatus != PipeReadExactStatus::Complete) {
+        return FramePipeReadStatus::Invalid;
+    }
+    std::memcpy(header, headerBytes.data(), sizeof(*header));
+    if (!IsValidFramePipeHeader(*header)) {
+        return FramePipeReadStatus::Invalid;
+    }
+
+    payload->assign(header->payloadBytes, 0);
+    const PipeReadExactStatus payloadStatus = ReadPipeExact(
+        pipe,
+        payload->data(),
+        header->payloadBytes,
+        false);
+    if (payloadStatus != PipeReadExactStatus::Complete) {
+        if (!payload->empty()) {
+            SecureZeroMemory(payload->data(), payload->size());
+        }
+        payload->clear();
+        return FramePipeReadStatus::Invalid;
+    }
+    return FramePipeReadStatus::Frame;
+}
+
+HRESULT GetCurrentUserSidString(std::wstring* sidText) {
+    if (sidText == nullptr) {
+        return E_POINTER;
+    }
+    sidText->clear();
+
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    DWORD requiredBytes = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &requiredBytes);
+    const DWORD queryError = GetLastError();
+    if (requiredBytes == 0 || queryError != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return HRESULT_FROM_WIN32(queryError == ERROR_SUCCESS ? ERROR_INVALID_DATA : queryError);
+    }
+
+    std::vector<BYTE> tokenBuffer(requiredBytes);
+    if (!GetTokenInformation(token, TokenUser, tokenBuffer.data(), requiredBytes, &requiredBytes)) {
+        const DWORD error = GetLastError();
+        CloseHandle(token);
+        return HRESULT_FROM_WIN32(error);
+    }
+    CloseHandle(token);
+
+    const auto* tokenUser = reinterpret_cast<const TOKEN_USER*>(tokenBuffer.data());
+    LPWSTR sidString = nullptr;
+    if (!ConvertSidToStringSidW(tokenUser->User.Sid, &sidString) || sidString == nullptr) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+    *sidText = sidString;
+    LocalFree(sidString);
+    return S_OK;
+}
+
+HRESULT CreateFrameChannelName(std::wstring* channelName) {
+    if (channelName == nullptr) {
+        return E_POINTER;
+    }
+    channelName->clear();
+    GUID channelGuid{};
+    HRESULT result = CoCreateGuid(&channelGuid);
+    if (FAILED(result)) {
+        return result;
+    }
+    wchar_t guidText[40] = {};
+    if (StringFromGUID2(channelGuid, guidText, ARRAYSIZE(guidText)) != 39) {
+        return E_FAIL;
+    }
+    *channelName = remotephone::frame::kGlobalFrameChannelPrefix;
+    channelName->append(guidText);
+    return S_OK;
+}
+
+HRESULT RunFramePipe(HANDLE inputPipe, const std::wstring& channelName) {
+    remotephone::frame::SharedNv12FrameBuffer writer;
+    std::vector<BYTE> payload;
+    remotephone::frame::Nv12FramePipeHeader packet{};
+    bool channelReadyReported = false;
+
+    for (;;) {
+        const FramePipeReadStatus readStatus = ReadFramePipePacket(inputPipe, &packet, &payload);
+        if (readStatus == FramePipeReadStatus::EndOfStream) {
+            return S_OK;
+        }
+        if (readStatus != FramePipeReadStatus::Frame) {
+            return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+        }
+
+        const HRESULT openResult = writer.OpenForWriter(channelName);
+        if (openResult == S_OK) {
+            const HRESULT publishResult = writer.PublishNv12(
+                payload.data(),
+                packet.width,
+                packet.height,
+                packet.payloadBytes,
+                packet.timestampNs);
+            if (FAILED(publishResult)) {
+                SecureZeroMemory(payload.data(), payload.size());
+                return publishResult;
+            }
+            if (!channelReadyReported) {
+                WriteWideText(STD_OUTPUT_HANDLE, L"CPU_FRAME_CHANNEL=READY\n");
+                channelReadyReported = true;
+            }
+        } else if (FAILED(openResult) && openResult != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+            && openResult != HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)
+            && openResult != HRESULT_FROM_WIN32(ERROR_PRIVILEGE_NOT_HELD)) {
+            SecureZeroMemory(payload.data(), payload.size());
+            return openResult;
+        }
+
+        SecureZeroMemory(payload.data(), payload.size());
+        payload.clear();
+    }
+}
 
 struct SupportedMode {
     GUID subtype;
@@ -478,6 +668,125 @@ HRESULT RunMediaFoundationCaptureSmokeTest() {
     return result;
 }
 
+HRESULT RunFrameTransportSelfTest() {
+    std::wstring userSid;
+    HRESULT result = GetCurrentUserSidString(&userSid);
+    if (FAILED(result)) {
+        return result;
+    }
+
+    GUID testGuid{};
+    result = CoCreateGuid(&testGuid);
+    if (FAILED(result)) {
+        return result;
+    }
+    wchar_t guidText[40] = {};
+    if (StringFromGUID2(testGuid, guidText, ARRAYSIZE(guidText)) != 39) {
+        return E_FAIL;
+    }
+    const std::wstring channelName = L"Local\\RemotePhone.FrameTest." + std::wstring(guidText);
+
+    remotephone::frame::SharedNv12FrameBuffer writer;
+    result = writer.OpenForSelfTestWriter(channelName, userSid);
+    if (result != S_OK) {
+        ReportFailure(L"не удалось открыть writer для NV12 self-test", result);
+        return FAILED(result) ? result : HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+    remotephone::frame::SharedNv12FrameBuffer reader;
+    result = reader.OpenForSelfTest(channelName, userSid);
+    if (result != S_OK) {
+        ReportFailure(L"не удалось открыть read-only reader для NV12 self-test", result);
+        return FAILED(result) ? result : HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+
+    const std::array<BYTE, 24> firstFrame = {{
+        10, 10, 20, 20,
+        10, 10, 20, 20,
+        30, 30, 40, 40,
+        30, 30, 40, 40,
+        100, 150, 110, 160,
+        120, 170, 130, 180,
+    }};
+    ULONGLONG firstSequence = 0;
+    result = writer.PublishNv12(firstFrame.data(), 4, 4, static_cast<UINT32>(firstFrame.size()), 123456789ULL, &firstSequence);
+    if (FAILED(result)) {
+        return result;
+    }
+    if (writer.PublishNv12(firstFrame.data(), 4, 4, static_cast<UINT32>(firstFrame.size() - 1), 123456789ULL) != E_INVALIDARG
+        || writer.PublishNv12(firstFrame.data(), 3, 4, static_cast<UINT32>(firstFrame.size()), 123456789ULL) != E_INVALIDARG) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+
+    std::array<BYTE, 12> scaledFrame{};
+    scaledFrame.fill(0xCD);
+    UINT64 observedTimestamp = 0;
+    ULONGLONG observedSequence = 0;
+    result = reader.CopyLatestNv12(2, 2, scaledFrame.data(), static_cast<DWORD>(scaledFrame.size()), 4, &observedTimestamp, &observedSequence);
+    if (FAILED(result) || result != S_OK
+        || observedTimestamp != 123456789ULL || observedSequence != firstSequence
+        || scaledFrame[0] != 10 || scaledFrame[1] != 20
+        || scaledFrame[2] != 0 || scaledFrame[3] != 0
+        || scaledFrame[4] != 30 || scaledFrame[5] != 40
+        || scaledFrame[6] != 0 || scaledFrame[7] != 0
+        || scaledFrame[8] != 115 || scaledFrame[9] != 165
+        || scaledFrame[10] != 0 || scaledFrame[11] != 0) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+
+    std::array<BYTE, 24> newestFrame{};
+    newestFrame.fill(200);
+    ULONGLONG secondSequence = 0;
+    result = writer.PublishNv12(newestFrame.data(), 4, 4, static_cast<UINT32>(newestFrame.size()), 987654321ULL, &secondSequence);
+    if (FAILED(result) || secondSequence <= firstSequence) {
+        return FAILED(result) ? result : HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+    scaledFrame.fill(0);
+    result = reader.CopyLatestNv12(2, 2, scaledFrame.data(), static_cast<DWORD>(scaledFrame.size()), 4, &observedTimestamp, &observedSequence);
+    if (FAILED(result) || result != S_OK
+        || observedTimestamp != 987654321ULL || observedSequence != secondSequence
+        || scaledFrame[0] != 200 || scaledFrame[1] != 200
+        || scaledFrame[4] != 200 || scaledFrame[5] != 200
+        || scaledFrame[8] != 200 || scaledFrame[9] != 200) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+    result = writer.ClearPublishedFrames();
+    if (FAILED(result)) {
+        return result;
+    }
+    if (reader.CopyLatestNv12(2, 2, scaledFrame.data(), static_cast<DWORD>(scaledFrame.size()), 4) != S_FALSE) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+
+    remotephone::frame::Nv12FramePipeHeader pipeHeader{};
+    pipeHeader.magic = remotephone::frame::kNv12FramePipeMagic;
+    pipeHeader.version = 1;
+    pipeHeader.headerBytes = sizeof(pipeHeader);
+    pipeHeader.width = 4;
+    pipeHeader.height = 4;
+    pipeHeader.payloadBytes = static_cast<UINT32>(firstFrame.size());
+    pipeHeader.timestampNs = 42;
+    if (!IsValidFramePipeHeader(pipeHeader)) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+    pipeHeader.flags = 1;
+    if (IsValidFramePipeHeader(pipeHeader)) {
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+    }
+
+    wchar_t summary[256] = {};
+    swprintf_s(
+        summary,
+        ARRAYSIZE(summary),
+        L"CPU_FRAME_CHANNEL_SELFTEST_PASS version=%u slots=%u max=%ux%u payload_bytes=%u\n",
+        remotephone::frame::kFrameChannelVersion,
+        remotephone::frame::kFrameSlotCount,
+        remotephone::frame::kMaxFrameWidth,
+        remotephone::frame::kMaxFrameHeight,
+        remotephone::frame::Nv12FrameByteLength(3840, 2160));
+    WriteWideText(STD_OUTPUT_HANDLE, summary);
+    return S_OK;
+}
+
 HRESULT StopRemoveAndShutdownCamera(ComPtr<IMFVirtualCamera>& camera) {
     if (camera == nullptr) {
         return S_OK;
@@ -502,7 +811,8 @@ HRESULT StopRemoveAndShutdownCamera(ComPtr<IMFVirtualCamera>& camera) {
 int wmain(int argc, wchar_t* argv[]) {
     const bool applicationSession = argc == 2 && std::wcscmp(argv[1], L"--application-session") == 0;
     const bool ciSmokeTest = argc == 2 && std::wcscmp(argv[1], L"--ci-smoke") == 0;
-    if (!applicationSession && !ciSmokeTest) {
+    const bool frameTransportSelfTest = argc == 2 && std::wcscmp(argv[1], L"--cpu-frame-ring-self-test") == 0;
+    if (!applicationSession && !ciSmokeTest && !frameTransportSelfTest) {
         WriteWideText(
             STD_ERROR_HANDLE,
             L"Недопустимый запуск. Камера управляется приложением «Видоискатель».\n");
@@ -516,6 +826,15 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
+    if (frameTransportSelfTest) {
+        result = RunFrameTransportSelfTest();
+        if (FAILED(result)) {
+            ReportFailure(L"не прошёл тест NV12 shared memory", result);
+            return 1;
+        }
+        return 0;
+    }
+
     MediaFoundation mediaFoundation;
     result = mediaFoundation.Initialize();
     if (FAILED(result)) {
@@ -527,6 +846,19 @@ int wmain(int argc, wchar_t* argv[]) {
     result = EnsureDiagnosticLogWritable(diagnosticLogPath);
     if (FAILED(result)) {
         ReportFailure(L"не удалось открыть журнал в ProgramData", result);
+        return 1;
+    }
+
+    std::wstring frameChannelName;
+    result = CreateFrameChannelName(&frameChannelName);
+    if (FAILED(result)) {
+        ReportFailure(L"не удалось создать имя временного NV12-канала", result);
+        return 1;
+    }
+    std::wstring frameChannelUserSid;
+    result = GetCurrentUserSidString(&frameChannelUserSid);
+    if (FAILED(result)) {
+        ReportFailure(L"не удалось определить владельца временного NV12-канала", result);
         return 1;
     }
 
@@ -554,6 +886,18 @@ int wmain(int argc, wchar_t* argv[]) {
     result = camera->SetString(VCAM_DIAGNOSTIC_LOG_PATH, diagnosticLogPath.c_str());
     if (FAILED(result)) {
         ReportFailure(L"не удалось передать журнал службе камеры", result);
+        camera->Shutdown();
+        return 1;
+    }
+    result = camera->SetString(VCAM_FRAME_CHANNEL_NAME, frameChannelName.c_str());
+    if (FAILED(result)) {
+        ReportFailure(L"не удалось передать имя временного NV12-канала", result);
+        camera->Shutdown();
+        return 1;
+    }
+    result = camera->SetString(VCAM_FRAME_CHANNEL_USER_SID, frameChannelUserSid.c_str());
+    if (FAILED(result)) {
+        ReportFailure(L"не удалось передать SID временного NV12-канала", result);
         camera->Shutdown();
         return 1;
     }
@@ -585,8 +929,13 @@ int wmain(int argc, wchar_t* argv[]) {
         WriteWideText(
             STD_OUTPUT_HANDLE,
             L"Тестовая камера запущена в приложении «Видоискатель». Оставьте приложение открытым, пока проверяете браузер, OBS и Discord.\n");
+        WriteWideText(STD_OUTPUT_HANDLE, L"CPU_FRAME_PIPE=READY\n");
         // Electron closes this pipe on application shutdown; EOF then releases the session camera.
-        (void)std::cin.get();
+        result = RunFramePipe(GetStdHandle(STD_INPUT_HANDLE), frameChannelName);
+        if (FAILED(result)) {
+            ReportFailure(L"ошибка входящего NV12 frame pipe", result);
+            exitCode = 1;
+        }
     }
 
     const HRESULT cleanupResult = StopRemoveAndShutdownCamera(camera);

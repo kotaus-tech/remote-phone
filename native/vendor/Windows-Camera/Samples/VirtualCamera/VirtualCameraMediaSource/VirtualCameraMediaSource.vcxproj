@@ -53,6 +53,7 @@
     <ClCompile Include="SimpleMediaSource.cpp" />
     <ClCompile Include="VirtualCameraMediaSourceActivate.cpp" />
     <ClCompile Include="SimpleMediaStream.cpp" />
+    <ClCompile Include="$(SolutionDir)..\..\..\..\frame-transport\SharedNv12FrameBuffer.cpp" />
     <ClCompile Include="winrtCommon.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -66,6 +67,7 @@
     <ClInclude Include="SimpleMediaSource.h" />
     <ClInclude Include="VirtualCameraMediaSourceActivate.h" />
     <ClInclude Include="SimpleMediaStream.h" />
+    <ClInclude Include="$(SolutionDir)..\..\..\..\frame-transport\SharedNv12FrameBuffer.h" />
     <ClInclude Include="VirtualCameraMediaSource.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
@@ -263,6 +265,14 @@
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies);onecoreuap.lib;ucrt.lib</AdditionalDependencies>
       <IgnoreSpecificDefaultLibraries>libucrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\..\..\..\frame-transport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

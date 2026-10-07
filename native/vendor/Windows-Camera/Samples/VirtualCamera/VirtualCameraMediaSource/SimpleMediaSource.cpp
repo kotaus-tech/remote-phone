@@ -36,6 +36,26 @@ namespace winrt::WindowsSample::implementation
             m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str(),
             L"media_source_initialized");
 
+        wil::unique_cotaskmem_string frameChannelName;
+        wil::unique_cotaskmem_string frameChannelUserSid;
+        UINT32 frameChannelNameLength = 0;
+        UINT32 frameChannelUserSidLength = 0;
+        if (SUCCEEDED(m_spAttributes->GetAllocatedString(
+                VCAM_FRAME_CHANNEL_NAME,
+                &frameChannelName,
+                &frameChannelNameLength)) &&
+            SUCCEEDED(m_spAttributes->GetAllocatedString(
+                VCAM_FRAME_CHANNEL_USER_SID,
+                &frameChannelUserSid,
+                &frameChannelUserSidLength)))
+        {
+            WriteMediaSourceDiagnostic(
+                m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str(),
+                L"media_source_frame_channel configured=1 name_length=%u sid_length=%u",
+                static_cast<unsigned>(frameChannelNameLength),
+                static_cast<unsigned>(frameChannelUserSidLength));
+        }
+
         RETURN_IF_FAILED(MFCreateEventQueue(&m_spEventQueue));
 
         m_streamList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<SimpleMediaStream>>(NUM_STREAMS);
@@ -53,7 +73,9 @@ namespace winrt::WindowsSample::implementation
                 this,
                 i,
                 MFSampleAllocatorUsage_UsesProvidedAllocator,
-                m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str()));
+                m_diagnosticLogPath.empty() ? nullptr : m_diagnosticLogPath.c_str(),
+                frameChannelName.get(),
+                frameChannelUserSid.get()));
 
             RETURN_IF_FAILED(m_streamList[i]->GetStreamDescriptor(&streamDescriptorList[i]));
         }

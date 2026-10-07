@@ -43,6 +43,17 @@ DEFINE_GUID(VCAM_KIND,
 DEFINE_GUID(VCAM_DIAGNOSTIC_LOG_PATH,
     0xe57d6c8a, 0xf640, 0x4898, 0x9e, 0x49, 0x35, 0x58, 0xa8, 0x9f, 0xef, 0x2c);
 
+// Per-session NV12 shared-memory channel identity. The random channel name is
+// pagefile-backed and exists only while the host and media source hold handles.
+// {4A9BDC62-199B-4F86-8F28-68A24B68F7C0}
+DEFINE_GUID(VCAM_FRAME_CHANNEL_NAME,
+    0x4a9bdc62, 0x199b, 0x4f86, 0x8f, 0x28, 0x68, 0xa2, 0x4b, 0x68, 0xf7, 0xc0);
+
+// User SID used to restrict the channel DACL to the app owner, LocalService, and SYSTEM.
+// {7AC5D973-7B7A-4D09-9159-6FC87BCD5D61}
+DEFINE_GUID(VCAM_FRAME_CHANNEL_USER_SID,
+    0x7ac5d973, 0x7b7a, 0x4d09, 0x91, 0x59, 0x6f, 0xc8, 0x7b, 0xcd, 0x5d, 0x61);
+
 // <-- VirtualCameraMediaSource activation attributes
 
 // Example Custom Property implemented by SimpleMediaSource
