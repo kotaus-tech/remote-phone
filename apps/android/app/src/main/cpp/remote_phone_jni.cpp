@@ -226,3 +226,81 @@ Java_tech_kotaus_remotephone_NativePairing_phoneDecryptSignal(JNIEnv* env, jobje
         static_cast<uint64_t>(handle), frame.data(), frame.size(), output.data(), output.size());
     return FrameCallResult(env, result, output, false);
 }
+
+#ifdef REMOTE_PHONE_ENABLE_TEST_PEER
+// Debug-only desktop-peer JNI wrappers let the Android emulator exercise the
+// same full OPAQUE handshake and encrypted SIGNAL exchange as the Windows peer.
+extern "C" JNIEXPORT jlong JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcStart(JNIEnv* env, jobject,
+                                                            jbyteArray pinArray,
+                                                            jbyteArray helloArray) {
+    std::vector<uint8_t> pin;
+    std::vector<uint8_t> hello;
+    if (!CopyInput(env, pinArray, RP_PIN_LENGTH, &pin)
+        || !CopyInput(env, helloArray, RP_MAX_FRAME_BYTES, &hello)
+        || pin.size() != RP_PIN_LENGTH) {
+        return 0;
+    }
+    const uint64_t handle = rp_pc_start(pin.data(), pin.size(), hello.data(), hello.size());
+    if (!pin.empty()) SecureZero(pin.data(), pin.size());
+    if (handle == 0) ThrowPairingError(env);
+    return static_cast<jlong>(handle);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcTakeInitialFrame(JNIEnv* env, jobject,
+                                                                       jlong handle) {
+    if (!ValidHandle(env, handle)) return nullptr;
+    std::vector<uint8_t> output(RP_MAX_FRAME_BYTES);
+    const int64_t result = rp_pc_take_initial_frame(
+        static_cast<uint64_t>(handle), output.data(), output.size());
+    return FrameCallResult(env, result, output, false);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcHandleFrame(JNIEnv* env, jobject,
+                                                                  jlong handle,
+                                                                  jbyteArray frameArray) {
+    if (!ValidHandle(env, handle)) return nullptr;
+    std::vector<uint8_t> frame;
+    if (!CopyInput(env, frameArray, RP_MAX_FRAME_BYTES, &frame)) return nullptr;
+    std::vector<uint8_t> output(RP_MAX_FRAME_BYTES);
+    const int64_t result = rp_pc_handle_frame(
+        static_cast<uint64_t>(handle), frame.data(), frame.size(), output.data(), output.size());
+    return FrameCallResult(env, result, output, true);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcIsAuthenticated(JNIEnv* env, jobject,
+                                                                      jlong handle) {
+    if (!ValidHandle(env, handle)) return JNI_FALSE;
+    const int32_t result = rp_pc_is_authenticated(static_cast<uint64_t>(handle));
+    if (result < 0) {
+        ThrowPairingError(env);
+        return JNI_FALSE;
+    }
+    return result == 1 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcDestroy(JNIEnv* env, jobject,
+                                                              jlong handle) {
+    if (ValidHandle(env, handle)) {
+        CheckSimpleResult(env, rp_pc_destroy(static_cast<uint64_t>(handle)));
+    }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcEncryptSignal(JNIEnv* env, jobject,
+                                                                    jlong handle,
+                                                                    jbyteArray plaintextArray) {
+    if (!ValidHandle(env, handle)) return nullptr;
+    std::vector<uint8_t> plaintext;
+    if (!CopyInput(env, plaintextArray, RP_MAX_FRAME_BYTES, &plaintext)) return nullptr;
+    std::vector<uint8_t> output(RP_MAX_FRAME_BYTES);
+    const int64_t result = rp_pc_encrypt_signal(
+        static_cast<uint64_t>(handle), plaintext.data(), plaintext.size(), output.data(),
+        output.size());
+    return FrameCallResult(env, result, output, false);
+}
+#endif

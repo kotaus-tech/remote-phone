@@ -6,7 +6,8 @@ license = "MIT OR Apache-2.0"
 description = "C ABI bridge for the shared OPAQUE pairing core"
 
 [lib]
-crate-type = ["cdylib"]
+# Keep the Windows DLL for Electron; Android statically links the archive into JNI.
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 remote-phone-pairing-core = { path = "../pairing-core" }

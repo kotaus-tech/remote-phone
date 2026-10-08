@@ -12,14 +12,19 @@ android {
         applicationId = "tech.kotaus.remotephone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
     ndkVersion = "27.2.12479018"
+
+    testOptions {
+        animationsDisabled = true
+    }
 
     externalNativeBuild {
         cmake {
@@ -62,6 +67,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("org.java-websocket:Java-WebSocket:1.6.0")
     implementation("io.github.webrtc-sdk:android:150.7871.01")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

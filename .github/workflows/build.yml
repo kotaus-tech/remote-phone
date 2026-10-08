@@ -75,22 +75,75 @@ jobs:
         with:
           target: aarch64-linux-android
 
-      - name: Проверить общий Rust-core для Android arm64
-        run: cargo check --manifest-path native/Cargo.toml --target aarch64-linux-android --locked
+      - name: Установить Rust target для эмулятора x86_64
+        run: rustup target add x86_64-linux-android
 
-      - name: Собрать native-библиотеку pairing-core для APK
+      - name: Проверить общий Rust-core для Android arm64 и x86_64
+        run: |
+          cargo check --manifest-path native/Cargo.toml --target aarch64-linux-android --locked
+          cargo check --manifest-path native/Cargo.toml --target x86_64-linux-android --locked
+
+      - name: Собрать статическую pairing-библиотеку для APK и эмулятора
         run: ./scripts/build-android-pairing.sh
+
+      - name: Проверить SONAME и DT_NEEDED прежней динамической схемы
+        run: ./scripts/inspect-android-dynamic-link-probe.sh
 
       - name: Собрать APK
         working-directory: apps/android
-        run: ./gradlew --no-daemon :app:assembleDebug
-
-      - name: Проверить упаковку нативных библиотек сопряжения
-        working-directory: apps/android
+        shell: bash
         run: |
-          apk="app/build/outputs/apk/debug/app-debug.apk"
-          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libremote_phone_jni.so'
-          unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libremote_phone_pairing_bridge.so'
+          set -o pipefail
+          log="$RUNNER_TEMP/android-apk-build.log"
+          if ! ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$log"; then
+            echo '### Ошибка сборки Android APK' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
+            details=$(tail -n 80 "$log" | paste -sd ' ' -)
+            details=${details//'%'/'%25'}
+            details=${details//$'\r'/'%0D'}
+            details=${details//$'\n'/'%0A'}
+            if [ ${#details} -gt 3500 ]; then details=${details: -3500}; fi
+            echo "::error title=Android APK build failure::$details"
+            exit 1
+          fi
+
+      - name: Проверить состав APK и ELF-зависимости
+        run: |
+          apk="apps/android/app/build/outputs/apk/debug/app-debug.apk"
+          contents="$(unzip -Z1 "$apk")"
+          grep -Fx 'lib/arm64-v8a/libremote_phone_jni.so' <<<"$contents"
+          grep -Fx 'lib/x86_64/libremote_phone_jni.so' <<<"$contents"
+          if grep -Eq '^lib/[^/]+/libremote_phone_pairing_bridge\.so$' <<<"$contents"; then
+            echo "Rust bridge должен быть статически включён в libremote_phone_jni.so" >&2
+            exit 1
+          fi
+          readelf="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          ./scripts/check-android-apk-native.sh "$apk" "$readelf"
+
+      - name: Проверить загрузку JNI и полный handshake на эмуляторе Android x86_64
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+          disable-animations: true
+          script: |
+            cd apps/android
+            set -o pipefail
+            log="$RUNNER_TEMP/android-emulator-test.log"
+            if ! ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest 2>&1 | tee "$log"; then
+              echo '### Ошибка Android instrumented test' >> "$GITHUB_STEP_SUMMARY"
+              tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
+              details=$(tail -n 80 "$log" | paste -sd ' ' -)
+              details=${details//'%'/'%25'}
+              details=${details//$'\r'/'%0D'}
+              details=${details//$'\n'/'%0A'}
+              if [ ${#details} -gt 3500 ]; then details=${details: -3500}; fi
+              echo "::error title=Android emulator test failure::$details"
+              exit 1
+            fi
 
       - name: Сохранить APK
         uses: actions/upload-artifact@v4

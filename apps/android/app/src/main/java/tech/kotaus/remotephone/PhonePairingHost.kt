@@ -31,6 +31,7 @@ private const val MAX_RTC_SIGNAL_BYTES = 192 * 1024
 private const val MAX_RTC_SDP_BYTES = 160 * 1024
 private const val MAX_RTC_CANDIDATE_BYTES = 8192
 private const val MAX_RTC_MID_BYTES = 256
+private const val MAX_DIAGNOSTIC_CHARS = 12_000
 private const val SESSION_LIFETIME_SECONDS = 5 * 60
 private const val SERVICE_TYPE = "_remotephone._tcp."
 private const val LOG_TAG = "RemotePhonePairing"
@@ -55,7 +56,8 @@ internal data class PhonePairingState(
     val port: Int? = null,
     val attemptsUsed: Int = 0,
     val secondsRemaining: Int = 0,
-    val discoveryAvailable: Boolean = false
+    val discoveryAvailable: Boolean = false,
+    val diagnosticText: String? = null
 )
 
 /** Owns one temporary phone-side PIN session and its local WebSocket endpoint. */
@@ -145,13 +147,15 @@ internal class PhonePairingHost(
                 Log.e(LOG_TAG, "Нативный модуль сопряжения недоступен", error)
                 stopInternal(
                     PhonePairingPhase.FAILED,
-                    "Не удалось загрузить модуль сопряжения. Перезапустите приложение; техническая причина записана в журнал Android."
+                    "Не удалось загрузить модуль сопряжения. Откройте «Диагностику» для просмотра причины.",
+                    diagnosticDetails("Загрузка нативного модуля сопряжения", error)
                 )
             } catch (error: Exception) {
                 Log.e(LOG_TAG, "Не удалось запустить сеанс сопряжения", error)
                 stopInternal(
                     PhonePairingPhase.FAILED,
-                    "Не удалось запустить сопряжение. Техническая причина записана в журнал Android; повторите попытку."
+                    "Не удалось запустить сопряжение. Откройте «Диагностику» для просмотра причины.",
+                    diagnosticDetails("Запуск сеанса сопряжения", error)
                 )
             }
         }
@@ -238,7 +242,11 @@ internal class PhonePairingHost(
         }
     }
 
-    private fun stopInternal(finalPhase: PhonePairingPhase, finalMessage: String) {
+    private fun stopInternal(
+        finalPhase: PhonePairingPhase,
+        finalMessage: String,
+        diagnosticText: String? = null
+    ) {
         mainHandler.removeCallbacks(countdownTask)
         val peerToClose = synchronized(cameraPeerLock) {
             cameraEnabled = false
@@ -266,7 +274,19 @@ internal class PhonePairingHost(
         if (oldHandle != 0L) runCatching {
             synchronized(signalCipherLock) { NativePairing.phoneDestroy(oldHandle) }
         }
-        publish(PhonePairingState(phase = finalPhase, message = finalMessage))
+        publish(PhonePairingState(
+            phase = finalPhase,
+            message = finalMessage,
+            diagnosticText = diagnosticText
+        ))
+    }
+
+    private fun diagnosticDetails(stage: String, error: Throwable): String {
+        val heading = "$stage\n"
+        val stack = error.stackTraceToString()
+        val combined = heading + stack
+        return if (combined.length <= MAX_DIAGNOSTIC_CHARS) combined
+        else combined.take(MAX_DIAGNOSTIC_CHARS) + "\n… журнал ошибки усечён"
     }
 
     private fun safeAttemptsUsed(): Int {
@@ -483,9 +503,14 @@ internal class PhonePairingHost(
                 publish(state.copy(phase = PhonePairingPhase.VERIFYING, message = "Компьютер подключён. Проверяем код…"))
             } catch (error: LinkageError) {
                 Log.e(LOG_TAG, "Ошибка вызова нативного модуля при начале сопряжения", error)
-                failConnection(connection, "Не удалось запустить нативное сопряжение. Проверьте журнал Android.")
-            } catch (_: Exception) {
-                failConnection(connection, "Не удалось начать защищённое сопряжение.")
+                failConnection(
+                    connection,
+                    "Не удалось запустить нативное сопряжение. Откройте «Диагностику» для просмотра причины.",
+                    error
+                )
+            } catch (error: Exception) {
+                Log.e(LOG_TAG, "Не удалось начать защищённое сопряжение", error)
+                failConnection(connection, "Не удалось начать защищённое сопряжение.", error)
             }
         }
 
@@ -539,26 +564,45 @@ internal class PhonePairingHost(
             } catch (error: LinkageError) {
                 Log.e(LOG_TAG, "Ошибка вызова нативного модуля при обработке кадра", error)
                 connection.close(1008, "Нативный модуль недоступен")
+                val details = diagnosticDetails("Обработка кадра нативным модулем", error)
                 worker.execute {
-                    stopInternal(PhonePairingPhase.FAILED, "Нативный модуль сопряжения недоступен. Остановите сеанс и попробуйте позже.")
+                    stopInternal(
+                        PhonePairingPhase.FAILED,
+                        "Нативный модуль сопряжения недоступен. Откройте «Диагностику» для просмотра причины.",
+                        details
+                    )
                 }
                 return
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.e(LOG_TAG, "Не удалось обработать кадр сопряжения", error)
+                val details = diagnosticDetails("Обработка кадра сопряжения", error)
                 if (state.phase == PhonePairingPhase.AUTHENTICATED) {
                     connection.close(1008, "Защищённый кадр отклонён")
                     worker.execute {
-                        stopInternal(PhonePairingPhase.CLOSED, "Защищённый кадр не прошёл проверку. Создайте новый PIN.")
+                        stopInternal(
+                            PhonePairingPhase.CLOSED,
+                            "Защищённый кадр не прошёл проверку. Откройте «Диагностику» для просмотра причины.",
+                            details
+                        )
                     }
                     return
                 }
                 val attempts = safeAttemptsUsed()
                 if (attempts >= 5) {
                     worker.execute {
-                        stopInternal(PhonePairingPhase.LOCKED, "Достигнут предел попыток. Создайте новый PIN вручную.")
+                        stopInternal(
+                            PhonePairingPhase.LOCKED,
+                            "Достигнут предел попыток. Создайте новый PIN вручную.",
+                            details
+                        )
                     }
                     connection.close(1008, "Сеанс заблокирован")
                 } else {
-                    failConnection(connection, "Не удалось подтвердить код. Проверьте PIN на телефоне и попробуйте снова.")
+                    failConnection(
+                        connection,
+                        "Не удалось подтвердить код. Проверьте PIN на телефоне и попробуйте снова.",
+                        error
+                    )
                 }
             } finally {
                 frame.fill(0)
@@ -609,11 +653,15 @@ internal class PhonePairingHost(
 
         override fun onError(connection: WebSocket?, error: Exception) {
             if (connection != null && connection === activeConnection) {
-                failConnection(connection, "Ошибка локального соединения. Попробуйте подключиться ещё раз.")
+                failConnection(
+                    connection,
+                    "Ошибка локального соединения. Откройте «Диагностику» для просмотра причины.",
+                    error
+                )
             }
         }
 
-        private fun failConnection(connection: WebSocket, message: String) {
+        private fun failConnection(connection: WebSocket, message: String, error: Throwable? = null) {
             if (connection !== activeConnection) return
             synchronized(signalCipherLock) {
                 if (handle == pairingHandle) runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
@@ -622,7 +670,8 @@ internal class PhonePairingHost(
             publish(state.copy(
                 phase = PhonePairingPhase.WAITING,
                 attemptsUsed = safeAttemptsUsed(),
-                message = message
+                message = message,
+                diagnosticText = error?.let { diagnosticDetails("Обработка соединения", it) } ?: state.diagnosticText
             ))
             connection.close(1008, "Сопряжение отклонено")
         }

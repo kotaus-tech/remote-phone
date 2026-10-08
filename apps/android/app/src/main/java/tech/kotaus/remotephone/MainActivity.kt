@@ -93,6 +93,7 @@ private fun StageTwoHome() {
     val context = LocalContext.current
     var selectedMode by remember { mutableStateOf(PhoneMode.CAMERA) }
     var allowControl by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
     var pairingState by remember { mutableStateOf(PhonePairingState()) }
     val pairingHost = remember {
         PhonePairingHost(context.applicationContext) { nextState -> pairingState = nextState }
@@ -105,12 +106,18 @@ private fun StageTwoHome() {
         } else {
             pairingState = pairingState.copy(
                 phase = PhonePairingPhase.FAILED,
-                message = "Без разрешения камеры передача видео не запускается. Экран телефона не считывается."
+                message = "Без разрешения камеры передача видео не запускается. Экран телефона не считывается.",
+                diagnosticText = null
             )
         }
     }
     DisposableEffect(pairingHost) {
         onDispose { pairingHost.close() }
+    }
+
+    if (showDiagnostics) {
+        DiagnosticsScreen(pairingState.diagnosticText) { showDiagnostics = false }
+        return
     }
 
     Surface(
@@ -222,6 +229,18 @@ private fun StageTwoHome() {
             }
 
             PhonePairingCard(pairingState)
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { showDiagnostics = true },
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF1D2630),
+                    contentColor = TextPrimary
+                )
+            ) {
+                Text("Диагностика", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
             Spacer(Modifier.height(14.dp))
             val sessionActive = pairingState.phase in setOf(
                 PhonePairingPhase.STARTING,
