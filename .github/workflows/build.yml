@@ -130,20 +130,8 @@ jobs:
           profile: pixel_2
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
           disable-animations: true
-          script: |
-            cd apps/android
-            log="$RUNNER_TEMP/android-emulator-test.log"
-            if ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest > "$log" 2>&1; then
-              cat "$log"
-            else
-              status=$?
-              cat "$log"
-              echo '### Ошибка Android instrumented test' >> "$GITHUB_STEP_SUMMARY"
-              tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
-              details=$(tail -n 80 "$log" | tr -d '\r' | tr '\n' ' ' | cut -c 1-3500 | sed 's/%/%25/g')
-              echo "::error title=Android emulator test failure::$details"
-              exit "$status"
-            fi
+          working-directory: apps/android
+          script: bash ../../scripts/run-android-emulator-test.sh
 
       - name: Сохранить APK
         uses: actions/upload-artifact@v4
