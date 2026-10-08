@@ -121,6 +121,12 @@ jobs:
           readelf="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           ./scripts/check-android-apk-native.sh "$apk" "$readelf"
 
+      - name: Разрешить доступ к KVM для ускорения Android-эмулятора
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Проверить загрузку JNI и полный handshake на эмуляторе Android x86_64
         uses: reactivecircus/android-emulator-runner@v2
         with:
