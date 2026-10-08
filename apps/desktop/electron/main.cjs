@@ -15,7 +15,7 @@ let cameraFrameWritePending = false;
 let gpuTextureProbeSession = null;
 let gpuTextureProbeStatus = {
   phase: 'idle',
-  message: 'Основной маршрут живой камеры — CPU → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
+  message: 'Основной маршрут живой камеры — VideoFrame → RGBA → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
   frameCount: 0,
   uniqueFrames: 0,
   droppedFrames: 0,

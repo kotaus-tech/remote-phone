@@ -43,7 +43,7 @@ const headings: Record<PageKey, { eyebrow: string; title: string; description: s
   diagnostics: {
     eyebrow: 'Диагностика',
     title: 'Состояние устройств',
-    description: 'Технический отчёт появится после подключения телефона.',
+    description: 'Текущий статус сопряжения, WebRTC-потока и виртуальной камеры Windows.',
   },
 };
 
@@ -64,7 +64,7 @@ function App() {
   });
   const [gpuTextureProbeStatus, setGpuTextureProbeStatus] = useState<GpuTextureProbeStatus>({
     phase: 'idle',
-    message: 'Основной маршрут живой камеры — CPU → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
+    message: 'Основной маршрут живой камеры — VideoFrame → RGBA → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
   });
   const heading = headings[page];
 
@@ -220,7 +220,14 @@ function App() {
           {page === 'screen' && <ScreenPage connected={connected} />}
           {page === 'camera' && <CameraPage status={cameraStatus} transport={cameraTransportStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
           {page === 'settings' && <SettingsPage />}
-          {page === 'diagnostics' && <DiagnosticsPage />}
+          {page === 'diagnostics' && (
+            <DiagnosticsPage
+              pairing={pairingStatus}
+              camera={cameraStatus}
+              transport={cameraTransportStatus}
+              gpuTextureProbe={gpuTextureProbeStatus}
+            />
+          )}
         </main>
       </div>
     </div>
@@ -464,7 +471,7 @@ function CameraPage({
               {gpuTextureProbe.phase === 'running' ? 'Проверяем…' : 'Запустить проверку'}
             </button>
           </div>
-          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не сквозную задержку телефона. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной путь CPU → VideoFrame.copyTo → NV12 → shared memory уже подключается; преимуществ GPU пока не доказано. Переключаться можно только после сравнения обоих трактов на тех же разрешении и частоте.</p>
+          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не сквозную задержку телефона. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной путь VideoFrame.copyTo(RGBA) → CPU-конвертация в NV12 → shared memory уже подключается; преимуществ GPU пока не доказано. Переключаться можно только после сравнения обоих трактов на тех же разрешении и частоте.</p>
           {(gpuTextureProbe.frameCount ?? 0) > 0 && (
             <div className="gpu-probe-metrics">
               <span>Размер <strong>{gpuTextureProbe.width}×{gpuTextureProbe.height}</strong></span>
@@ -521,14 +528,113 @@ function SettingRow({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function DiagnosticsPage() {
+function DiagnosticsPage({
+  pairing,
+  camera,
+  transport,
+  gpuTextureProbe,
+}: {
+  pairing: PairingStatus;
+  camera: CameraHostStatus;
+  transport: CameraTransportStatus;
+  gpuTextureProbe: GpuTextureProbeStatus;
+}) {
+  const sourceSize = transport.width && transport.height
+    ? `${transport.width}×${transport.height} NV12`
+    : 'Ещё нет видеокадров';
+  const gpuFacts = gpuTextureProbe.frameCount === undefined
+    ? []
+    : [
+        { label: 'Размер', value: `${gpuTextureProbe.width ?? 0}×${gpuTextureProbe.height ?? 0}` },
+        { label: 'Кадров', value: String(gpuTextureProbe.frameCount) },
+        { label: 'Разных кадров', value: String(gpuTextureProbe.uniqueFrames ?? 0) },
+        { label: 'Темп', value: `${gpuTextureProbe.observedFps ?? 0} fps` },
+        { label: 'Readback в среднем', value: `${gpuTextureProbe.averageReadbackMs ?? 0} мс` },
+        { label: 'Пропущено', value: String(gpuTextureProbe.droppedFrames ?? 0) },
+      ];
+
   return (
-    <section className="panel diagnostics-empty">
-      <div className="empty-icon" aria-hidden="true">⌁</div>
-      <h2>Отчёт появится после подключения</h2>
-      <p>Здесь будут только фактические возможности телефона, состояние соединения и сведения для отладки.</p>
+    <section className="diagnostics-grid" aria-label="Текущая диагностика">
+      <DiagnosticCard
+        title="Сопряжение телефона"
+        phase={pairing.phase}
+        message={pairing.message}
+      />
+      <DiagnosticCard
+        title="Виртуальная камера Windows"
+        phase={camera.phase}
+        message={camera.message}
+      />
+      <DiagnosticCard
+        title="Видеоканал WebRTC"
+        phase={transport.phase}
+        message={transport.message}
+        facts={[
+          { label: 'Источник', value: sourceSize },
+          { label: 'Передано кадров', value: transport.frames === undefined ? '—' : String(transport.frames) },
+          { label: 'Пропущено кадров', value: transport.dropped === undefined ? '—' : String(transport.dropped) },
+        ]}
+      />
+      <DiagnosticCard
+        title="GPU shared-texture · эксперимент"
+        phase={gpuTextureProbe.phase}
+        message={gpuTextureProbe.message}
+        facts={gpuFacts}
+      />
     </section>
   );
+}
+
+function DiagnosticCard({
+  title,
+  phase,
+  message,
+  facts = [],
+}: {
+  title: string;
+  phase: string;
+  message: string;
+  facts?: { label: string; value: string }[];
+}) {
+  return (
+    <article className="panel diagnostics-card">
+      <div className="diagnostics-card-heading">
+        <h2>{title}</h2>
+        <span className={`diagnostics-state ${phase}`}>{diagnosticPhaseLabel(phase)}</span>
+      </div>
+      <p className="diagnostics-message" role="status">{message}</p>
+      {facts.length > 0 && (
+        <dl className="diagnostics-facts">
+          {facts.map((fact) => (
+            <div key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </article>
+  );
+}
+
+function diagnosticPhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    authenticated: 'PIN подтверждён',
+    connecting: 'Подключаемся',
+    discovering: 'Ищем телефон',
+    'discovery-error': 'Поиск недоступен',
+    error: 'Ошибка',
+    unavailable: 'Недоступно',
+    starting: 'Запускается',
+    running: 'Работает',
+    stopped: 'Остановлена',
+    idle: 'Ожидание',
+    negotiating: 'Согласование WebRTC',
+    connected: 'Подключено',
+    receiving: 'Передаёт видео',
+    passed: 'Проверка пройдена',
+  };
+  return labels[phase] ?? phase;
 }
 
 export default App;

@@ -116,7 +116,7 @@ private fun StageTwoHome() {
     }
 
     if (showDiagnostics) {
-        DiagnosticsScreen(pairingState.diagnosticText) { showDiagnostics = false }
+        DiagnosticsScreen(pairingState.message, pairingState.diagnosticText) { showDiagnostics = false }
         return
     }
 

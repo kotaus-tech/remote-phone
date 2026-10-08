@@ -409,6 +409,15 @@ internal class PhonePairingHost(
                 if (connection !== activeConnection || handle != pairingHandle) return
                 cameraPeer.also { cameraPeer = null }
             }
+            if (peerToClose?.hasFailed() == false
+                && handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
+                val message = if (type == "error") {
+                    "Компьютер сообщил об ошибке видеосеанса (${signal.optString("code")})."
+                } else {
+                    "Компьютер завершил видеосеанс."
+                }
+                publish(state.copy(message = message))
+            }
             peerToClose?.close()
             return
         }

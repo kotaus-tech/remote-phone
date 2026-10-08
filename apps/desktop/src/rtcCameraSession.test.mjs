@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RtcCameraSession } from './rtcCameraSession.ts';
 
-function installBrowserMocks({ videoFrameLayout } = {}) {
+function installBrowserMocks({ videoFrameLayout, videoFrameError } = {}) {
   const previous = new Map();
   const globals = ['window', 'document', 'MediaStream', 'VideoFrame', 'RTCPeerConnection'];
   for (const name of globals) previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -95,7 +95,12 @@ function installBrowserMocks({ videoFrameLayout } = {}) {
     }
     async copyTo(destination, options) {
       this.copyOptions = options;
-      destination.set([16, 32, 48, 64, 80, 96, 112, 128, 129, 145, 161, 177]);
+      if (videoFrameError) throw videoFrameError;
+      assert.equal(options.format, 'RGBA');
+      destination.set([
+        255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+        255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+      ]);
       return videoFrameLayout ? videoFrameLayout(options.layout) : options.layout;
     }
     close() { this.closed = true; }
@@ -225,7 +230,7 @@ test('защищённый offer уходит раньше отложенных 
   assert.equal(browser.timers.size, 0);
 });
 
-test('копирует входящий VideoFrame в плотно упакованный NV12, передаёт кадр и освобождает буфер', async (t) => {
+test('копирует входящий VideoFrame в RGBA, конвертирует в NV12 и передаёт кадр', async (t) => {
   const browser = installBrowserMocks();
   t.after(browser.restore);
   const api = createApi();
@@ -258,11 +263,11 @@ test('копирует входящий VideoFrame в плотно упаков�
     width: 4,
     height: 2,
     timestampNs: '1250000000',
-    data: [16, 32, 48, 64, 80, 96, 112, 128, 129, 145, 161, 177],
+    data: [63, 63, 173, 173, 63, 63, 173, 173, 102, 240, 42, 26],
   });
   assert.deepEqual(browser.lastVideoFrame.copyOptions, {
-    format: 'NV12',
-    layout: [{ offset: 0, stride: 4 }, { offset: 8, stride: 4 }],
+    format: 'RGBA',
+    layout: [{ offset: 0, stride: 16 }],
   });
   assert.equal(browser.lastVideoFrame.closed, true);
   assert.ok(statuses.some((status) => status.phase === 'receiving' && status.frames === 1));
@@ -277,9 +282,9 @@ test('копирует входящий VideoFrame в плотно упаков�
   assert.equal(browser.timers.size, 0);
 });
 
-test('закрывается при разметке NV12 с padding и не передаёт невалидный кадр в host', async (t) => {
+test('отклоняет RGBA-разметку с padding и не передаёт невалидный кадр в host', async (t) => {
   const browser = installBrowserMocks({
-    videoFrameLayout: (layout) => [layout[0], { offset: layout[1].offset, stride: layout[1].stride + 4 }],
+    videoFrameLayout: (layout) => [{ offset: layout[0].offset, stride: layout[0].stride + 4 }],
   });
   t.after(browser.restore);
   const api = createApi();
@@ -301,10 +306,60 @@ test('закрывается при разметке NV12 с padding и не п�
 
   assert.equal(api.writtenFrames.length, 0);
   assert.ok(statuses.some((status) => status.phase === 'error'
-    && status.message.includes('плотную двухплоскостную разметку NV12')));
+    && status.message.includes('плотную одноплоскостную разметку RGBA')));
   assert.equal(api.sentSignals.at(-1).type, 'bye');
   assert.equal(browser.lastVideoFrame.closed, true);
   assert.equal(track.stopped, true);
   assert.equal(browser.peer.closed, true);
   assert.equal(browser.videos[0].removed, true);
+});
+
+
+test('сообщает об ошибке чтения RGBA и завершает неработающий сеанс', async (t) => {
+  const browser = installBrowserMocks({ videoFrameError: new Error('This pixel format conversion is not supported.') });
+  t.after(browser.restore);
+  const api = createApi();
+  const statuses = [];
+  const session = new RtcCameraSession(api, (status) => statuses.push(status));
+  const track = {
+    kind: 'video',
+    readyState: 'live',
+    onended: null,
+    stopped: false,
+    stop() { this.stopped = true; },
+  };
+
+  await session.start();
+  browser.peer.ontrack({ track });
+  await settleAsyncWork();
+  browser.videos[0].emitVideoFrame(0.5);
+  await settleAsyncWork();
+
+  assert.equal(api.writtenFrames.length, 0);
+  assert.ok(statuses.some((status) => status.phase === 'error'
+    && status.message.includes('Не удалось скопировать кадр WebRTC в RGBA')
+    && status.message.includes('This pixel format conversion is not supported.')));
+  assert.equal(api.sentSignals.at(-1).type, 'bye');
+  assert.equal(browser.lastVideoFrame.closed, true);
+  assert.equal(track.stopped, true);
+  assert.equal(browser.peer.closed, true);
+});
+
+test('сбрасывает статус и закрывает ресурсы при завершении видеосеанса телефоном', async (t) => {
+  const browser = installBrowserMocks();
+  t.after(browser.restore);
+  const api = createApi();
+  const statuses = [];
+  const session = new RtcCameraSession(api, (status) => statuses.push(status));
+
+  await session.start();
+  await session.handleSignal({ v: 1, type: 'bye' });
+
+  assert.deepEqual(statuses.at(-1), {
+    phase: 'idle',
+    message: 'Телефон завершил видеосеанс.',
+  });
+  assert.equal(browser.peer.closed, true);
+  assert.equal(browser.peer.localDataChannel.closed, true);
+  assert.equal(browser.timers.size, 0);
 });

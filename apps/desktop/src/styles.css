@@ -201,14 +201,23 @@ button:disabled { cursor: default; }
 .setting-row span { display: block; margin-top: 5px; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
 .disabled-control { width: 30px; height: 17px; flex: 0 0 auto; margin: 0 !important; border: 1px solid #3b4651; border-radius: 99px; background: #252d35; }
 .disabled-control::after { content: ''; display: block; width: 11px; height: 11px; margin: 2px; border-radius: 50%; background: #8995a0; }
-.diagnostics-empty { max-width: 740px; min-height: 245px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 25px; text-align: center; }
-.diagnostics-empty h2 { margin: 14px 0 7px; font-size: 1.08rem; font-weight: 620; }
-.diagnostics-empty p { max-width: 440px; margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.6; }
+.diagnostics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.diagnostics-card { min-width: 0; padding: 18px; }
+.diagnostics-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.diagnostics-card-heading h2 { margin: 0; font-size: 0.94rem; font-weight: 620; }
+.diagnostics-state { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-size: 0.68rem; line-height: 1.2; }
+.diagnostics-state.error { border-color: #6a3c40; color: #ff9898; background: #321f22; }
+.diagnostics-state.receiving, .diagnostics-state.running, .diagnostics-state.authenticated, .diagnostics-state.connected, .diagnostics-state.passed { border-color: #31574a; color: #8fe0b5; background: #1d302a; }
+.diagnostics-message { margin: 12px 0 0; color: var(--muted); font-size: 0.82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.diagnostics-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 14px; margin: 15px 0 0; padding-top: 13px; border-top: 1px solid var(--line); }
+.diagnostics-facts div { min-width: 0; }
+.diagnostics-facts dt { color: var(--muted); font-size: 0.69rem; }
+.diagnostics-facts dd { margin: 4px 0 0; color: var(--text); font-size: 0.78rem; font-weight: 580; overflow-wrap: anywhere; }
 
 @media (max-width: 930px) {
   .app-layout { grid-template-columns: 204px minmax(0,1fr); }
   .sidebar { padding-left: 9px; padding-right: 9px; }
-  .device-grid, .camera-layout, .settings-grid { grid-template-columns: 1fr; }
+  .device-grid, .camera-layout, .settings-grid, .diagnostics-grid { grid-template-columns: 1fr; }
   .note-panel { min-height: auto; }
 }
 @media (max-width: 680px) {

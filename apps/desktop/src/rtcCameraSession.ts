@@ -11,16 +11,16 @@ export type CameraTransportStatus = {
   dropped?: number;
 };
 
-type Nv12PlaneLayout = { offset: number; stride: number };
+type VideoPlaneLayout = { offset: number; stride: number };
 
 type WebCodecsVideoFrame = {
   codedWidth: number;
   codedHeight: number;
   timestamp: number;
   copyTo: (destination: Uint8Array, options: {
-    format: 'NV12';
-    layout: Nv12PlaneLayout[];
-  }) => Promise<Nv12PlaneLayout[]>;
+    format: 'RGBA';
+    layout: VideoPlaneLayout[];
+  }) => Promise<VideoPlaneLayout[]>;
   close: () => void;
 };
 
@@ -42,6 +42,11 @@ type ScheduledVideoFrame = {
   element: VideoElementWithFrameCallbacks;
 };
 
+type VideoFrameScratchBuffers = {
+  rgba: Uint8Array | null;
+  nv12: Uint8Array | null;
+};
+
 type CameraTransportApi = {
   sendRtcSignal: (signal: RtcSignal) => Promise<{ ok: boolean; message?: string }>;
   writeNv12Frame: (frame: {
@@ -55,6 +60,7 @@ type CameraTransportApi = {
 const MAX_WIDTH = 3840;
 const MAX_HEIGHT = 2160;
 const MAX_NV12_BYTES = MAX_WIDTH * MAX_HEIGHT * 3 / 2;
+const MAX_RGBA_BYTES = MAX_WIDTH * MAX_HEIGHT * 4;
 const MAX_RTC_CANDIDATES = 128;
 const CONNECTION_TIMEOUT_MS = 30_000;
 const FIRST_FRAME_TIMEOUT_MS = 15_000;
@@ -78,6 +84,7 @@ export class RtcCameraSession {
   private framesWritten = 0;
   private framesDropped = 0;
   private reportedWriteFailure = false;
+  private readonly frameScratch: VideoFrameScratchBuffers = { rgba: null, nv12: null };
   private connectionTimer: number | null = null;
   private firstFrameTimer: number | null = null;
 
@@ -350,7 +357,8 @@ export class RtcCameraSession {
       }
       const timestampUs = Math.max(0, Math.trunc(mediaTimeSeconds * 1_000_000));
       frame = new VideoFrameType(video, { timestamp: timestampUs });
-      packed = await copyFrameToPackedNv12(frame);
+      packed = await copyFrameToPackedNv12(frame, this.frameScratch);
+      if (this.stopped || this.video !== video || track.readyState !== 'live') return;
       const timestampNs = (BigInt(Math.max(0, Math.trunc(frame.timestamp))) * 1000n).toString();
       const result = await this.api.writeNv12Frame({
         width: frame.codedWidth,
@@ -382,7 +390,7 @@ export class RtcCameraSession {
     } catch (error) {
       if (!this.stopped) this.fail(error instanceof Error ? error.message : 'Не удалось прочитать видеокадр.');
     } finally {
-      packed?.fill(0);
+      this.frameScratch.nv12?.fill(0);
       frame?.close();
       if (!this.stopped && this.video === video && track.readyState === 'live') {
         this.scheduleVideoFrame(video, track);
@@ -421,7 +429,10 @@ export class RtcCameraSession {
   }
 }
 
-async function copyFrameToPackedNv12(frame: WebCodecsVideoFrame): Promise<Uint8Array> {
+async function copyFrameToPackedNv12(
+  frame: WebCodecsVideoFrame,
+  scratch: VideoFrameScratchBuffers,
+): Promise<Uint8Array> {
   const width = frame.codedWidth;
   const height = frame.codedHeight;
   if (!Number.isInteger(width) || !Number.isInteger(height)
@@ -429,24 +440,87 @@ async function copyFrameToPackedNv12(frame: WebCodecsVideoFrame): Promise<Uint8A
     || width > MAX_WIDTH || height > MAX_HEIGHT) {
     throw new Error(`Недопустимый размер видеокадра ${width}×${height}.`);
   }
-  const packedBytes = width * height * 3 / 2;
-  if (packedBytes > MAX_NV12_BYTES) throw new Error('Видеокадр превышает предел 4K NV12.');
+  const pixelCount = width * height;
+  const packedBytes = pixelCount * 3 / 2;
+  const rgbaBytes = pixelCount * 4;
+  if (packedBytes > MAX_NV12_BYTES || rgbaBytes > MAX_RGBA_BYTES) {
+    throw new Error('Видеокадр превышает предел 4K.');
+  }
 
-  const packed = new Uint8Array(packedBytes);
-  const requestedLayout = [
-    { offset: 0, stride: width },
-    { offset: width * height, stride: width },
-  ];
+  if (!scratch.rgba || scratch.rgba.byteLength !== rgbaBytes) scratch.rgba = new Uint8Array(rgbaBytes);
+  if (!scratch.nv12 || scratch.nv12.byteLength !== packedBytes) scratch.nv12 = new Uint8Array(packedBytes);
+  const rgbaStorage = scratch.rgba;
+  const packedStorage = scratch.nv12;
+  const rgba = rgbaStorage;
+  const packed = packedStorage;
+  const requestedLayout = [{ offset: 0, stride: width * 4 }];
   try {
-    const layouts = await frame.copyTo(packed, { format: 'NV12', layout: requestedLayout });
-    if (!Array.isArray(layouts) || layouts.length !== 2
-      || layouts.some((plane, index) => plane.offset !== requestedLayout[index].offset
-        || plane.stride !== requestedLayout[index].stride)) {
-      throw new Error('Chromium не применил плотную двухплоскостную разметку NV12.');
+    let layouts: VideoPlaneLayout[];
+    try {
+      layouts = await frame.copyTo(rgba, { format: 'RGBA', layout: requestedLayout });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'неизвестная ошибка';
+      throw new Error(`Не удалось скопировать кадр WebRTC в RGBA: ${reason}`);
     }
+    if (!Array.isArray(layouts) || layouts.length !== 1
+      || layouts[0].offset !== requestedLayout[0].offset
+      || layouts[0].stride !== requestedLayout[0].stride) {
+      throw new Error('Chromium не применил плотную одноплоскостную разметку RGBA.');
+    }
+
+    convertRgbaToPackedNv12(rgba, packed, width, height);
     return packed;
   } catch (error) {
-    packed.fill(0);
+    packedStorage.fill(0);
     throw error;
+  } finally {
+    rgbaStorage.fill(0);
+  }
+}
+
+// Convert each 2×2 RGBA block to limited-range BT.709 NV12; WebCodecs does not reliably copy directly to NV12.
+function convertRgbaToPackedNv12(
+  rgba: Uint8Array,
+  packed: Uint8Array,
+  width: number,
+  height: number,
+): void {
+  const lumaBytes = width * height;
+  const chromaOffset = lumaBytes;
+  for (let y = 0; y < height; y += 2) {
+    const topRow = y * width;
+    const bottomRow = topRow + width;
+    for (let x = 0; x < width; x += 2) {
+      const topLeft = (topRow + x) * 4;
+      const topRight = topLeft + 4;
+      const bottomLeft = (bottomRow + x) * 4;
+      const bottomRight = bottomLeft + 4;
+
+      const redTopLeft = rgba[topLeft];
+      const greenTopLeft = rgba[topLeft + 1];
+      const blueTopLeft = rgba[topLeft + 2];
+      const redTopRight = rgba[topRight];
+      const greenTopRight = rgba[topRight + 1];
+      const blueTopRight = rgba[topRight + 2];
+      const redBottomLeft = rgba[bottomLeft];
+      const greenBottomLeft = rgba[bottomLeft + 1];
+      const blueBottomLeft = rgba[bottomLeft + 2];
+      const redBottomRight = rgba[bottomRight];
+      const greenBottomRight = rgba[bottomRight + 1];
+      const blueBottomRight = rgba[bottomRight + 2];
+
+      // Q16 coefficients convert nonlinear sRGB/BT.709 RGB into limited-range BT.709 luma.
+      packed[topRow + x] = 16 + ((redTopLeft * 11966 + greenTopLeft * 40254 + blueTopLeft * 4064 + 32768) >> 16);
+      packed[topRow + x + 1] = 16 + ((redTopRight * 11966 + greenTopRight * 40254 + blueTopRight * 4064 + 32768) >> 16);
+      packed[bottomRow + x] = 16 + ((redBottomLeft * 11966 + greenBottomLeft * 40254 + blueBottomLeft * 4064 + 32768) >> 16);
+      packed[bottomRow + x + 1] = 16 + ((redBottomRight * 11966 + greenBottomRight * 40254 + blueBottomRight * 4064 + 32768) >> 16);
+
+      const red = (redTopLeft + redTopRight + redBottomLeft + redBottomRight + 2) >> 2;
+      const green = (greenTopLeft + greenTopRight + greenBottomLeft + greenBottomRight + 2) >> 2;
+      const blue = (blueTopLeft + blueTopRight + blueBottomLeft + blueBottomRight + 2) >> 2;
+      const chromaIndex = chromaOffset + (y / 2) * width + x;
+      packed[chromaIndex] = 128 + ((-red * 6596 - green * 22189 + blue * 28784 + 32768) >> 16);
+      packed[chromaIndex + 1] = 128 + ((red * 28784 - green * 26145 - blue * 2639 + 32768) >> 16);
+    }
   }
 }

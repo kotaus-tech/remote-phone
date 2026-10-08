@@ -38,9 +38,15 @@ import tech.kotaus.remotephone.ui.theme.TextPrimary
 import tech.kotaus.remotephone.ui.theme.TextSecondary
 
 @Composable
-internal fun DiagnosticsScreen(diagnosticText: String?, onBack: () -> Unit) {
+internal fun DiagnosticsScreen(currentStatus: String, diagnosticText: String?, onBack: () -> Unit) {
     val context = LocalContext.current
-    val details = diagnosticText ?: "Пока нет технических ошибок. Если сопряжение завершится с ошибкой, её причина появится здесь."
+    val details = buildString {
+        appendLine("Текущее состояние:")
+        appendLine(currentStatus)
+        appendLine()
+        appendLine("Последняя техническая ошибка:")
+        append(diagnosticText ?: "Не зарегистрирована.")
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Night) {
         Column(
@@ -52,7 +58,7 @@ internal fun DiagnosticsScreen(diagnosticText: String?, onBack: () -> Unit) {
         ) {
             Text("Диагностика", color = TextPrimary, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "Подробности последней ошибки остаются локально и не отправляются автоматически. Их можно скопировать для разбора.",
+                "Здесь показан текущий этап соединения и причина последней технической ошибки. Эти сведения остаются локально и не отправляются автоматически.",
                 color = TextSecondary,
                 fontSize = 13.sp,
                 lineHeight = 19.sp
@@ -64,7 +70,7 @@ internal fun DiagnosticsScreen(diagnosticText: String?, onBack: () -> Unit) {
                     clipboard.setPrimaryClip(ClipData.newPlainText("Диагностика Видоискателя", details))
                     Toast.makeText(context, "Диагностика скопирована", Toast.LENGTH_SHORT).show()
                 },
-                enabled = diagnosticText != null,
+                enabled = true,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(

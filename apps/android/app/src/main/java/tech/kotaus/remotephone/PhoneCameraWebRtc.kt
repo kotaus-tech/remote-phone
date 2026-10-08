@@ -61,6 +61,8 @@ internal class PhoneCameraWebRtc(
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
     private val pendingLocalCandidates = mutableListOf<IceCandidate>()
 
+    fun hasFailed(): Boolean = failureStarted
+
     fun handleSignal(signal: JSONObject) {
         if (closed) return
         handler.post {
