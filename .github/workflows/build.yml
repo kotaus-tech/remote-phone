@@ -98,7 +98,8 @@ jobs:
           if ! ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$log"; then
             echo '### Ошибка сборки Android APK' >> "$GITHUB_STEP_SUMMARY"
             tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
-            details=$(tail -n 80 "$log" | paste -sd ' ' -)
+            details=$(grep -E '(^e: |(^|[[:space:]])error:|Unresolved reference|Type mismatch|Expecting |Conflicting overloads|Compilation error|^FAILURE:|BUILD FAILED)' "$log" | tail -n 50 | paste -sd ' ' -)
+            if [ -z "$details" ]; then details=$(tail -n 50 "$log" | paste -sd ' ' -); fi
             details=${details//'%'/'%25'}
             details=${details//$'\r'/'%0D'}
             details=${details//$'\n'/'%0A'}
