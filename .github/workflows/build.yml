@@ -132,18 +132,17 @@ jobs:
           disable-animations: true
           script: |
             cd apps/android
-            set -o pipefail
             log="$RUNNER_TEMP/android-emulator-test.log"
-            if ! ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest 2>&1 | tee "$log"; then
+            if ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest > "$log" 2>&1; then
+              cat "$log"
+            else
+              status=$?
+              cat "$log"
               echo '### Ошибка Android instrumented test' >> "$GITHUB_STEP_SUMMARY"
               tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
-              details=$(tail -n 80 "$log" | paste -sd ' ' -)
-              details=${details//'%'/'%25'}
-              details=${details//$'\r'/'%0D'}
-              details=${details//$'\n'/'%0A'}
-              if [ ${#details} -gt 3500 ]; then details=${details: -3500}; fi
+              details=$(tail -n 80 "$log" | tr -d '\r' | tr '\n' ' ' | cut -c 1-3500 | sed 's/%/%25/g')
               echo "::error title=Android emulator test failure::$details"
-              exit 1
+              exit "$status"
             fi
 
       - name: Сохранить APK
