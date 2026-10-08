@@ -7,7 +7,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "build": "tsc --noEmit && vite build",
-    "test": "node --test electron/pairing.test.cjs electron/rtc-signaling.test.cjs electron/frame-pipe.test.cjs",
+    "test": "node --test electron/pairing.test.cjs electron/rtc-signaling.test.cjs electron/frame-pipe.test.cjs && node --experimental-strip-types --test src/rtcCameraSession.test.mjs",
     "start": "npm run build && npm run build:gpu-probe && electron .",
     "dist:win": "npm run build && npm run build:gpu-probe && electron-builder --win nsis --x64 --publish never",
     "build:gpu-probe": "node-gyp rebuild --directory native/gpu-texture-probe --target=44.5.1 --dist-url=https://electronjs.org/headers --arch=x64 && node scripts/copy-gpu-probe.cjs",
