@@ -1,0 +1,245 @@
+name: Сборка приложений
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pairing-core:
+    name: Проверки общего Rust pairing-core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Собрать и проверить тесты pairing-core и измерить Argon2id
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path native/Cargo.toml --all-targets --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/pairing-core-test.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(grep -E '(error|panicked|FAILED|assertion failed|mismatch|could not compile|test result)' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 40 | paste -sd '\n' -)
+            details=${details//'%'/'%25'}
+            details=${details//$'\r'/'%0D'}
+            details=${details//$'\n'/'%0A'}
+            echo "::error title=Ошибка тестов Rust-core::$details"
+            exit "$status"
+          fi
+          measurement=$(grep -F 'Измерение профиля Argon2id' "$RUNNER_TEMP/pairing-core-test.log" | tail -n 1)
+          if [ -n "$measurement" ]; then
+            echo "$measurement" >> "$GITHUB_STEP_SUMMARY"
+            measurement=${measurement//'%'/'%25'}
+            measurement=${measurement//$'\r'/'%0D'}
+            measurement=${measurement//$'\n'/'%0A'}
+            echo "::notice title=Измерение Argon2id::$measurement"
+          else
+            echo "::warning title=Измерение Argon2id::Строка измерения не найдена в выводе тестов"
+          fi
+
+  android:
+    name: APK Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: apps/android/**/*.gradle*
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Установить платформу сборки
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Установить Rust stable для Android arm64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: aarch64-linux-android
+
+      - name: Установить Rust target для эмулятора x86_64
+        run: rustup target add x86_64-linux-android
+
+      - name: Проверить общий Rust-core для Android arm64 и x86_64
+        run: |
+          cargo check --manifest-path native/Cargo.toml --target aarch64-linux-android --locked
+          cargo check --manifest-path native/Cargo.toml --target x86_64-linux-android --locked
+
+      - name: Собрать статическую pairing-библиотеку для APK и эмулятора
+        run: ./scripts/build-android-pairing.sh
+
+      - name: Проверить SONAME и DT_NEEDED прежней динамической схемы
+        run: ./scripts/inspect-android-dynamic-link-probe.sh
+
+      - name: Собрать APK
+        working-directory: apps/android
+        shell: bash
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/android-apk-build.log"
+          if ! ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$log"; then
+            echo '### Ошибка сборки Android APK' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 120 "$log" >> "$GITHUB_STEP_SUMMARY"
+            details=$(grep -E '(^e: |(^|[[:space:]])error:|Unresolved reference|Type mismatch|Expecting |Conflicting overloads|Compilation error|^FAILURE:|BUILD FAILED)' "$log" | tail -n 50 | paste -sd ' ' -)
+            if [ -z "$details" ]; then details=$(tail -n 50 "$log" | paste -sd ' ' -); fi
+            details=${details//'%'/'%25'}
+            details=${details//$'\r'/'%0D'}
+            details=${details//$'\n'/'%0A'}
+            if [ ${#details} -gt 3500 ]; then details=${details: -3500}; fi
+            echo "::error title=Android APK build failure::$details"
+            exit 1
+          fi
+
+      - name: Проверить состав APK и ELF-зависимости
+        run: |
+          apk="apps/android/app/build/outputs/apk/debug/app-debug.apk"
+          contents="$(unzip -Z1 "$apk")"
+          grep -Fx 'lib/arm64-v8a/libremote_phone_jni.so' <<<"$contents"
+          grep -Fx 'lib/x86_64/libremote_phone_jni.so' <<<"$contents"
+          if grep -Eq '^lib/[^/]+/libremote_phone_pairing_bridge\.so$' <<<"$contents"; then
+            echo "Rust bridge должен быть статически включён в libremote_phone_jni.so" >&2
+            exit 1
+          fi
+          readelf="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          ./scripts/check-android-apk-native.sh "$apk" "$readelf"
+
+      - name: Разрешить доступ к KVM для ускорения Android-эмулятора
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Проверить загрузку JNI и полный handshake на эмуляторе Android x86_64
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot
+          disable-animations: true
+          working-directory: apps/android
+          script: bash ../../scripts/run-android-emulator-test.sh
+
+      - name: Сохранить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Видоискатель-Android-APK
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Setup.exe и нативные компоненты x64
+    runs-on: windows-latest
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Подготовить MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Подготовить NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Установить Rust stable MSVC x64
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Собрать общий Rust-core для Windows x64
+        run: cargo build --manifest-path native/Cargo.toml --release --locked
+
+      - name: Собрать нативные компоненты
+        shell: pwsh
+        run: ./scripts/build-native.ps1
+
+      - name: Установить зависимости приложения Windows
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Стресс-тест нативного GPU AsyncWorker
+        working-directory: apps/desktop
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $output = & npm run test:gpu-probe-worker 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            $details = @($output | ForEach-Object { [string] $_ } | Select-Object -Last 20)
+            $message = ($details -join ' | ')
+            if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=GPU AsyncWorker stress test::$message"
+            exit $exitCode
+          }
+
+      - name: Проверить desktop-тесты Windows
+        working-directory: apps/desktop
+        run: npm test
+
+      - name: Собрать Windows Setup.exe
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          $output = & npm run dist:win 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            $details = @($output | ForEach-Object { [string] $_ } | Where-Object { $_ -match '(?i)warning|error|failed|exception|fatal|not found|cannot' } | Select-Object -Last 12)
+            if ($details.Count -eq 0) { $details = @($output | Select-Object -Last 12) }
+            $message = ($details -join ' | ')
+            if ($message.Length -gt 3500) { $message = $message.Substring($message.Length - 3500) }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows Setup build::$message"
+            exit $exitCode
+          }
+
+      - name: Проверить упаковку GPU shared-texture addon
+        shell: pwsh
+        run: |
+          $builtAddon = 'apps/desktop/native-runtime/gpu_texture_probe.node'
+          $packagedAddon = 'apps/desktop/release/win-unpacked/resources/native/gpu_texture_probe.node'
+          if (-not (Test-Path -LiteralPath $builtAddon)) { throw 'GPU shared-texture addon не собран.' }
+          if (-not (Test-Path -LiteralPath $packagedAddon)) { throw 'GPU shared-texture addon не попал в Windows-пакет.' }
+          if ((Get-Item -LiteralPath $packagedAddon).Length -lt 1024) { throw 'Упакованный GPU addon пуст или повреждён.' }
+          Get-FileHash -LiteralPath $packagedAddon -Algorithm SHA256 | Format-List
+
+      - name: Проверить установку и удаление Setup.exe
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -LiteralPath 'apps/desktop/release' -Filter '*Setup*.exe' | Select-Object -First 1
+          if ($null -eq $setup) { throw 'Setup.exe не найден в каталоге сборки.' }
+          ./scripts/verify-installer.ps1 -InstallerPath $setup.FullName
+
+      - name: Сохранить Setup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Видоискатель-Windows-Setup-x64
+          path: apps/desktop/release/*Setup*.exe
+          if-no-files-found: error
+          retention-days: 14
