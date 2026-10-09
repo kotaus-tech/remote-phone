@@ -58,4 +58,63 @@ class NativePairingInstrumentedTest {
             sessionBytes.fill(0)
         }
     }
+
+    @Test
+    fun phoneResumeConnectionReadvertisesSameSessionAndKeepsSignalCipher() {
+        val session = NativePairing.phoneCreate()
+        val sessionBytes = requireNotNull(session)
+        val decoded = ByteBuffer.wrap(sessionBytes).order(ByteOrder.LITTLE_ENDIAN)
+        val phoneHandle = decoded.long
+        val pin = ByteArray(8)
+        decoded.get(pin)
+        val sessionId = ByteArray(16)
+        decoded.get(sessionId)
+
+        // Resume is impossible before authentication.
+        assertNull("resume before authentication must fail", NativePairing.phoneResumeConnection(phoneHandle))
+
+        var pcHandle = 0L
+        try {
+            val hello = requireNotNull(NativePairing.phoneStartConnection(phoneHandle))
+            pcHandle = NativePairingTestPeer.pcStart(pin, hello)
+            val login1 = requireNotNull(NativePairingTestPeer.pcTakeInitialFrame(pcHandle))
+            val login2 = requireNotNull(NativePairing.phoneHandleFrame(phoneHandle, login1))
+            val login3 = requireNotNull(NativePairingTestPeer.pcHandleFrame(pcHandle, login2))
+            val authOk = requireNotNull(NativePairing.phoneHandleFrame(phoneHandle, login3))
+            val authAck = requireNotNull(NativePairingTestPeer.pcHandleFrame(pcHandle, authOk))
+            assertNull(NativePairing.phoneHandleFrame(phoneHandle, authAck))
+            assertTrue(NativePairing.phoneIsAuthenticated(phoneHandle))
+
+            // Advance the signal sequence before the simulated transport drop.
+            val beforeDrop = "before-drop".toByteArray(Charsets.UTF_8)
+            val encryptedBefore = requireNotNull(NativePairingTestPeer.pcEncryptSignal(pcHandle, beforeDrop))
+            assertArrayEquals(beforeDrop, requireNotNull(NativePairing.phoneDecryptSignal(phoneHandle, encryptedBefore)))
+
+            // The resumed HELLO carries the same session_id in the frame header (bytes 5..21).
+            val resumedHello = requireNotNull(NativePairing.phoneResumeConnection(phoneHandle))
+            assertTrue("resumed HELLO is too short", resumedHello.size >= 29)
+            assertEquals('R'.code.toByte(), resumedHello[0])
+            assertEquals('V'.code.toByte(), resumedHello[1])
+            assertEquals('P'.code.toByte(), resumedHello[2])
+            assertEquals('1'.code.toByte(), resumedHello[3])
+            assertEquals(0x01.toByte(), resumedHello[4])
+            val resumedSessionId = resumedHello.copyOfRange(5, 21)
+            assertArrayEquals(sessionId, resumedSessionId)
+
+            // The protected signal exchange continues with sequence continuity.
+            val afterResume = "after-resume".toByteArray(Charsets.UTF_8)
+            val encryptedAfter = requireNotNull(NativePairingTestPeer.pcEncryptSignal(pcHandle, afterResume))
+            assertArrayEquals(afterResume, requireNotNull(NativePairing.phoneDecryptSignal(phoneHandle, encryptedAfter)))
+
+            val phoneSignal = "phone-after-resume".toByteArray(Charsets.UTF_8)
+            val phoneEncrypted = requireNotNull(NativePairing.phoneEncryptSignal(phoneHandle, phoneSignal))
+            assertArrayEquals(phoneSignal, requireNotNull(NativePairingTestPeer.pcDecryptSignal(pcHandle, phoneEncrypted)))
+        } finally {
+            if (pcHandle > 0L) runCatching { NativePairingTestPeer.pcDestroy(pcHandle) }
+            if (phoneHandle > 0L) runCatching { NativePairing.phoneDestroy(phoneHandle) }
+            pin.fill(0)
+            sessionId.fill(0)
+            sessionBytes.fill(0)
+        }
+    }
 }

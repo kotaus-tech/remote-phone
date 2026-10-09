@@ -1,4 +1,9 @@
 import type { RtcSignal } from './remotePhone';
+import {
+  decodeSessionMessage,
+  encodeSessionControl,
+} from './sessionControl.ts';
+import type { PhoneTelemetryMessage, QualityProfile, SessionInfoMessage, StreamMode } from './sessionControl.ts';
 
 type CameraTransportPhase = 'idle' | 'negotiating' | 'connected' | 'receiving' | 'error';
 
@@ -57,6 +62,12 @@ type CameraTransportApi = {
   }) => Promise<{ ok: boolean; dropped?: boolean; message?: string }>;
 };
 
+export type MediaSessionListeners = {
+  onSessionInfo?: (info: SessionInfoMessage) => void;
+  onTelemetry?: (telemetry: PhoneTelemetryMessage) => void;
+  onStreamMode?: (mode: StreamMode | null) => void;
+};
+
 const MAX_WIDTH = 3840;
 const MAX_HEIGHT = 2160;
 const MAX_NV12_BYTES = MAX_WIDTH * MAX_HEIGHT * 3 / 2;
@@ -68,10 +79,13 @@ const FIRST_FRAME_TIMEOUT_MS = 15_000;
 export class RtcCameraSession {
   private readonly api: CameraTransportApi;
   private readonly onStatus: (status: CameraTransportStatus) => void;
+  private readonly listeners: MediaSessionListeners;
   private peer: RTCPeerConnection | null = null;
   private controlChannel: RTCDataChannel | null = null;
   private video: HTMLVideoElement | null = null;
   private videoTrack: MediaStreamTrack | null = null;
+  private externalVideo: HTMLVideoElement | null = null;
+  private streamMode: StreamMode | null = null;
   private scheduledVideoFrame: ScheduledVideoFrame | null = null;
   private stopped = false;
   private starting = false;
@@ -88,9 +102,67 @@ export class RtcCameraSession {
   private connectionTimer: number | null = null;
   private firstFrameTimer: number | null = null;
 
-  constructor(api: CameraTransportApi, onStatus: (status: CameraTransportStatus) => void) {
+  constructor(
+    api: CameraTransportApi,
+    onStatus: (status: CameraTransportStatus) => void,
+    listeners: MediaSessionListeners = {},
+  ) {
     this.api = api;
     this.onStatus = onStatus;
+    this.listeners = listeners;
+  }
+
+  /** Current phone stream mode once the phone announced it. */
+  getStreamMode(): StreamMode | null {
+    return this.streamMode;
+  }
+
+  /** The live incoming video track, once attached. */
+  getVideoTrack(): MediaStreamTrack | null {
+    return this.videoTrack;
+  }
+
+  /**
+   * Renders the incoming stream into a viewer-owned element (screen mode).
+   * The hidden NV12 pipeline element stays untouched; React owns the element.
+   */
+  attachExternalVideo(element: HTMLVideoElement | null): void {
+    if (this.externalVideo === element) return;
+    const previous = this.externalVideo;
+    this.externalVideo = null;
+    if (previous && previous.srcObject) previous.srcObject = null;
+    this.externalVideo = element;
+    if (element && this.videoTrack && this.videoTrack.readyState === 'live') {
+      element.srcObject = new MediaStream([this.videoTrack]);
+      void element.play().catch(() => undefined);
+    }
+  }
+
+  /** Asks the phone to stop the current stream (session stays paired). */
+  sendStopStream(): void {
+    this.sendControlMessage({ v: 1, type: 'stop-stream' });
+  }
+
+  /** Asks the phone to apply a live quality profile. */
+  sendQuality(value: QualityProfile): void {
+    this.sendControlMessage({ v: 1, type: 'quality', value });
+  }
+
+  private sendControlMessage(message: Parameters<typeof encodeSessionControl>[0]): void {
+    const channel = this.controlChannel;
+    if (!channel || channel.readyState !== 'open') {
+      this.onStatus({
+        phase: this.streamMode === 'screen' ? 'connected' : 'idle',
+        message: 'Канал управления ещё не открыт.',
+      });
+      return;
+    }
+    try {
+      const bytes = encodeSessionControl(message);
+      channel.send(bytes as unknown as ArrayBufferView<ArrayBuffer>);
+    } catch {
+      // The channel is closing; the next negotiation re-opens it.
+    }
   }
 
   async start(): Promise<void> {
@@ -103,17 +175,15 @@ export class RtcCameraSession {
       this.peer = peer;
       peer.addTransceiver('video', { direction: 'recvonly' });
       this.controlChannel = peer.createDataChannel('remote-phone-control', { ordered: true });
-      this.controlChannel.onmessage = () => {
-        // Отдельный канал зарезервирован для согласованного протокола; ввод и текстовые команды не принимаются.
-        this.controlChannel?.close();
-        this.controlChannel = null;
+      this.controlChannel.onmessage = (event) => {
+        this.handleControlMessage(event.data);
       };
       peer.ondatachannel = (event) => {
         if (event.channel.label !== 'remote-phone-control') {
           event.channel.close();
           return;
         }
-        event.channel.onmessage = () => event.channel.close();
+        event.channel.onmessage = (messageEvent) => this.handleControlMessage(messageEvent.data);
       };
       peer.ontrack = (event) => {
         if (event.track.kind !== 'video' || this.stopped) {
@@ -288,6 +358,41 @@ export class RtcCameraSession {
     if (!result.ok) throw new Error(result.message || 'Не удалось передать сигнал WebRTC.');
   }
 
+  /**
+   * Strict data channel protocol: session-info and telemetry only. Any other
+   * type is rejected without touching the media path; text input can never
+   * arrive here.
+   */
+  private handleControlMessage(data: unknown): void {
+    if (this.stopped) return;
+    let bytes: Uint8Array;
+    if (typeof data === 'string') {
+      bytes = new TextEncoder().encode(data);
+    } else if (data instanceof ArrayBuffer) {
+      bytes = new Uint8Array(data);
+    } else if (ArrayBuffer.isView(data)) {
+      bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    } else {
+      return;
+    }
+    try {
+      const message = decodeSessionMessage(bytes);
+      if (message.type === 'session-info') {
+        this.streamMode = message.mode;
+        if (message.mode === 'screen') {
+          // The visible viewer renders natively; no NV12 copy is needed.
+          this.cancelScheduledVideoFrame();
+        }
+        this.listeners.onSessionInfo?.(message);
+        this.listeners.onStreamMode?.(message.mode);
+      } else {
+        this.listeners.onTelemetry?.(message);
+      }
+    } catch {
+      // Malformed control frames are dropped; media keeps flowing.
+    }
+  }
+
   private async attachRemoteTrack(track: MediaStreamTrack): Promise<void> {
     if (this.stopped) return;
     if (this.videoTrack && this.videoTrack !== track) {
@@ -317,6 +422,8 @@ export class RtcCameraSession {
 
   private scheduleVideoFrame(video: HTMLVideoElement, track: MediaStreamTrack): void {
     if (this.stopped || this.video !== video || track.readyState !== 'live') return;
+    // Screen mode renders through the visible viewer; skip the NV12 copy loop.
+    if (this.streamMode === 'screen') return;
     const element = video as VideoElementWithFrameCallbacks;
     if (typeof element.requestVideoFrameCallback === 'function') {
       const id = element.requestVideoFrameCallback((now, metadata) => {

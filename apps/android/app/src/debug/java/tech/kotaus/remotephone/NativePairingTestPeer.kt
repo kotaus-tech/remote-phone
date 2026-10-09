@@ -8,4 +8,5 @@ internal object NativePairingTestPeer {
     external fun pcIsAuthenticated(handle: Long): Boolean
     external fun pcDestroy(handle: Long)
     external fun pcEncryptSignal(handle: Long, plaintext: ByteArray): ByteArray?
+    external fun pcDecryptSignal(handle: Long, frame: ByteArray): ByteArray?
 }

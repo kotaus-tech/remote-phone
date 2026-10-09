@@ -96,6 +96,20 @@ impl PhonePairingSession {
         Ok(encoded)
     }
 
+    /// Re-advertises an already authenticated session on a fresh transport
+    /// connection. Returns a HELLO frame carrying the same `session_id`; the
+    /// OPAQUE state, signal cipher and its per-direction sequence counters are
+    /// kept, so the peer can resume protected signaling without a new PIN.
+    /// The advertised lifetime is nominal: the PIN window closed at
+    /// authentication and no longer bounds an established session.
+    pub fn resume_connection(&mut self) -> Result<Vec<u8>, HandshakeError> {
+        if self.step != Step::Authenticated {
+            return Err(TransportError::HandshakeIncomplete.into());
+        }
+        let hello = Hello::new(self.session_id, MAX_SESSION_LIFETIME_SECONDS)?.to_frame()?;
+        Ok(hello.encode()?)
+    }
+
     /// Abandons an incomplete transport connection without resetting the PIN
     /// lifetime or login-attempt counter.
     pub fn abort_connection(&mut self) {
@@ -476,6 +490,60 @@ mod tests {
         assert!(!pc_signal
             .windows(pin.len())
             .any(|window| window == pin.as_bytes()));
+    }
+
+    #[test]
+    fn resume_connection_keeps_signal_cipher_and_session_id_across_transport() {
+        let (mut phone, pin) = phone_and_pin();
+        let mut pc = complete_handshake(&mut phone, &pin);
+
+        // Advance both sequence counters before the transport drops.
+        let before_drop = pc.encrypt_signal(b"before-drop").unwrap();
+        assert_eq!(phone.decrypt_signal(&before_drop).unwrap(), b"before-drop");
+
+        let hello = phone.resume_connection().unwrap();
+        let frame = Frame::decode(&hello).unwrap();
+        assert_eq!(frame.message_type(), MessageType::Hello);
+        assert_eq!(frame.sequence(), 0);
+        assert_eq!(frame.session_id(), phone.session_id());
+
+        // The same signal cipher keeps working with strict sequence continuity.
+        let after_resume = pc.encrypt_signal(b"after-resume").unwrap();
+        assert_eq!(phone.decrypt_signal(&after_resume).unwrap(), b"after-resume");
+        let phone_signal = phone.encrypt_signal(b"phone-after-resume").unwrap();
+        assert_eq!(
+            pc.decrypt_signal(&phone_signal).unwrap(),
+            b"phone-after-resume"
+        );
+    }
+
+    #[test]
+    fn replayed_pre_resume_signal_frame_is_rejected_and_poisons_the_session() {
+        let (mut phone, pin) = phone_and_pin();
+        let mut pc = complete_handshake(&mut phone, &pin);
+
+        let first = pc.encrypt_signal(b"first").unwrap();
+        assert_eq!(phone.decrypt_signal(&first).unwrap(), b"first");
+        let second = pc.encrypt_signal(b"second").unwrap();
+
+        phone.resume_connection().unwrap();
+        assert_eq!(
+            phone.decrypt_signal(&first),
+            Err(TransportError::UnexpectedSequence)
+        );
+        // Replay poisons the session: no further signaling is accepted.
+        assert_eq!(
+            phone.decrypt_signal(&second),
+            Err(TransportError::HandshakeIncomplete)
+        );
+    }
+
+    #[test]
+    fn resume_connection_requires_an_authenticated_session() {
+        let (mut phone, _pin) = phone_and_pin();
+        assert!(phone.resume_connection().is_err());
+        phone.start_connection().unwrap();
+        assert!(phone.resume_connection().is_err());
     }
 
     #[test]

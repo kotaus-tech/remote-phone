@@ -19,6 +19,8 @@ uint64_t rp_phone_create(uint8_t *pin_out, size_t pin_capacity,
                          uint8_t *session_id_out, size_t session_id_capacity);
 int64_t rp_phone_start_connection(uint64_t handle, uint8_t *frame_out,
                                   size_t frame_capacity);
+int64_t rp_phone_resume_connection(uint64_t handle, uint8_t *frame_out,
+                                   size_t frame_capacity);
 int64_t rp_phone_handle_frame(uint64_t handle, const uint8_t *frame,
                               size_t frame_length, uint8_t *reply_out,
                               size_t reply_capacity);

@@ -10,6 +10,35 @@ export type PairingStatus = {
   message: string;
 };
 
+export type StreamMode = 'camera' | 'screen';
+export type QualityProfile = 'auto' | 'max' | 'economy';
+
+export type PhoneTelemetryMessage = {
+  v: 1;
+  type: 'telemetry';
+  mode: StreamMode;
+  quality: QualityProfile;
+  fps: number;
+  bitrateKbps: number;
+  width: number;
+  height: number;
+  batteryPercent: number;
+  charging: boolean;
+  thermal: string;
+  thermalLevel: number;
+};
+
+export type SessionInfoMessage = {
+  v: 1;
+  type: 'session-info';
+  mode: StreamMode;
+  quality: QualityProfile;
+};
+
+export type SessionControlMessage =
+  | { v: 1; type: 'stop-stream' }
+  | { v: 1; type: 'quality'; value: QualityProfile };
+
 export type PairingConnectResult = {
   ok: boolean;
   message?: string;
@@ -50,7 +79,7 @@ declare global {
     remotePhone?: {
       getDevices: () => Promise<PairingDevice[]>;
       refreshDevices: () => Promise<PairingDevice[]>;
-      connect: (request: { address: string; port: number; pin: string }) => Promise<PairingConnectResult>;
+      connect: (request: { address: string; port: number; pin: string; deviceName?: string | null }) => Promise<PairingConnectResult>;
       disconnect: () => Promise<{ ok: boolean }>;
       sendRtcSignal: (signal: RtcSignal) => Promise<PairingConnectResult>;
       onRtcSignal: (callback: (signal: RtcSignal) => void) => () => void;
@@ -62,6 +91,8 @@ declare global {
       getGpuTextureProbeStatus: () => Promise<GpuTextureProbeStatus>;
       runGpuTextureProbe: () => Promise<GpuTextureProbeStatus>;
       onGpuTextureProbeStatus: (callback: (status: GpuTextureProbeStatus) => void) => () => void;
+      setAlwaysOnTop: (flag: boolean) => Promise<boolean>;
+      toggleFullscreen: () => Promise<boolean>;
     };
   }
 }

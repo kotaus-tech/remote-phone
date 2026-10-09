@@ -134,6 +134,18 @@ Java_tech_kotaus_remotephone_NativePairing_phoneStartConnection(JNIEnv* env, job
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
+Java_tech_kotaus_remotephone_NativePairing_phoneResumeConnection(JNIEnv* env, jobject,
+                                                                  jlong handle) {
+    if (!ValidHandle(env, handle)) {
+        return nullptr;
+    }
+    std::vector<uint8_t> output(RP_MAX_FRAME_BYTES);
+    const int64_t result = rp_phone_resume_connection(
+        static_cast<uint64_t>(handle), output.data(), output.size());
+    return FrameCallResult(env, result, output, false);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
 Java_tech_kotaus_remotephone_NativePairing_phoneHandleFrame(JNIEnv* env, jobject,
                                                              jlong handle,
                                                              jbyteArray frameArray) {
@@ -301,6 +313,19 @@ Java_tech_kotaus_remotephone_NativePairingTestPeer_pcEncryptSignal(JNIEnv* env, 
     const int64_t result = rp_pc_encrypt_signal(
         static_cast<uint64_t>(handle), plaintext.data(), plaintext.size(), output.data(),
         output.size());
+    return FrameCallResult(env, result, output, false);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_tech_kotaus_remotephone_NativePairingTestPeer_pcDecryptSignal(JNIEnv* env, jobject,
+                                                                    jlong handle,
+                                                                    jbyteArray frameArray) {
+    if (!ValidHandle(env, handle)) return nullptr;
+    std::vector<uint8_t> frame;
+    if (!CopyInput(env, frameArray, RP_MAX_FRAME_BYTES, &frame)) return nullptr;
+    std::vector<uint8_t> output(RP_MAX_FRAME_BYTES);
+    const int64_t result = rp_pc_decrypt_signal(
+        static_cast<uint64_t>(handle), frame.data(), frame.size(), output.data(), output.size());
     return FrameCallResult(env, result, output, false);
 }
 #endif

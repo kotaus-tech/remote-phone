@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld('remotePhone', {
   getGpuTextureProbeStatus: () => ipcRenderer.invoke('camera:get-gpu-probe-status'),
   runGpuTextureProbe: () => ipcRenderer.invoke('camera:run-gpu-texture-probe'),
   onGpuTextureProbeStatus: (callback) => subscribe('camera:gpu-texture-probe-status', callback),
+  setAlwaysOnTop: (flag) => ipcRenderer.invoke('window:set-always-on-top', flag),
+  toggleFullscreen: () => ipcRenderer.invoke('window:toggle-fullscreen'),
 });

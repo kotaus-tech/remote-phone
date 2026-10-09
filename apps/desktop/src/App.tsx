@@ -1,5 +1,13 @@
-import { useEffect, useState } from 'react';
-import type { CameraHostStatus, GpuTextureProbeStatus, PairingDevice, PairingStatus } from './remotePhone';
+import { useEffect, useRef, useState } from 'react';
+import type {
+  CameraHostStatus,
+  GpuTextureProbeStatus,
+  PairingDevice,
+  PairingStatus,
+  PhoneTelemetryMessage,
+  QualityProfile,
+  StreamMode,
+} from './remotePhone';
 import { RtcCameraSession } from './rtcCameraSession';
 import type { CameraTransportStatus } from './rtcCameraSession';
 
@@ -66,6 +74,10 @@ function App() {
     phase: 'idle',
     message: 'Основной маршрут живой камеры — VideoFrame → RGBA → NV12 → shared memory; GPU остаётся необязательным экспериментом.',
   });
+  const [phoneTelemetry, setPhoneTelemetry] = useState<PhoneTelemetryMessage | null>(null);
+  const [streamMode, setStreamMode] = useState<StreamMode | null>(null);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+  const sessionRef = useRef<RtcCameraSession | null>(null);
   const heading = headings[page];
 
   useEffect(() => {
@@ -126,7 +138,18 @@ function App() {
     let active = true;
     const session = new RtcCameraSession(api, (nextStatus) => {
       if (active) setCameraTransportStatus(nextStatus);
+    }, {
+      onSessionInfo: (info) => {
+        if (active) setStreamMode(info.mode);
+      },
+      onTelemetry: (telemetry) => {
+        if (active) setPhoneTelemetry(telemetry);
+      },
+      onStreamMode: (mode) => {
+        if (active) setStreamMode(mode);
+      },
     });
+    sessionRef.current = session;
     const removeSignalListener = api.onRtcSignal((signal) => {
       void session.handleSignal(signal);
     });
@@ -136,9 +159,17 @@ function App() {
 
     return () => {
       active = false;
+      sessionRef.current = null;
       removeSignalListener();
       session.stop();
     };
+  }, [pairingStatus.phase]);
+
+  useEffect(() => {
+    if (pairingStatus.phase !== 'authenticated') {
+      setStreamMode(null);
+      setPhoneTelemetry(null);
+    }
   }, [pairingStatus.phase]);
 
   async function runGpuTextureProbe() {
@@ -217,7 +248,25 @@ function App() {
             </div>
           </div>
           {page === 'devices' && <DevicesPage devices={devices} status={pairingStatus} onStatusChange={setPairingStatus} />}
-          {page === 'screen' && <ScreenPage connected={connected} />}
+          {page === 'screen' && (
+            <ScreenPage
+              connected={connected}
+              pairingMessage={pairingStatus.message}
+              transport={cameraTransportStatus}
+              telemetry={phoneTelemetry}
+              streamMode={streamMode}
+              alwaysOnTop={alwaysOnTop}
+              onAlwaysOnTopChange={(flag) => {
+                setAlwaysOnTop(flag);
+                void window.remotePhone?.setAlwaysOnTop(flag).then((applied) => {
+                  if (applied !== flag) setAlwaysOnTop(applied);
+                });
+              }}
+              onVideoReady={(element) => sessionRef.current?.attachExternalVideo(element)}
+              onStopStream={() => sessionRef.current?.sendStopStream()}
+              onQuality={(value) => sessionRef.current?.sendQuality(value)}
+            />
+          )}
           {page === 'camera' && <CameraPage status={cameraStatus} transport={cameraTransportStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
           {page === 'settings' && <SettingsPage />}
           {page === 'diagnostics' && (
@@ -272,7 +321,12 @@ function DevicesPage({ devices, status, onStatusChange }: DevicesPageProps) {
     setLocalMessage('');
     onStatusChange({ phase: 'connecting', message: 'Открываем локальное соединение и проверяем PIN…' });
     try {
-      const result = await api.connect({ address: address.trim(), port: Number(port), pin: oneTimePin });
+      const result = await api.connect({
+        address: address.trim(),
+        port: Number(port),
+        pin: oneTimePin,
+        deviceName: devices.find((device) => device.id === selectedDevice)?.name ?? null,
+      });
       if (!result.ok) {
         setLocalMessage(result.message || 'Не удалось завершить сопряжение. Проверьте PIN и сеть.');
         onStatusChange({ phase: 'error', message: result.message || 'Сопряжение не завершено.' });
@@ -403,18 +457,177 @@ function DevicesPage({ devices, status, onStatusChange }: DevicesPageProps) {
   );
 }
 
-function ScreenPage({ connected }: { connected: boolean }) {
+function ScreenPage({
+  connected,
+  pairingMessage,
+  transport,
+  telemetry,
+  streamMode,
+  alwaysOnTop,
+  onAlwaysOnTopChange,
+  onVideoReady,
+  onStopStream,
+  onQuality,
+}: {
+  connected: boolean;
+  pairingMessage: string;
+  transport: CameraTransportStatus;
+  telemetry: PhoneTelemetryMessage | null;
+  streamMode: StreamMode | null;
+  alwaysOnTop: boolean;
+  onAlwaysOnTopChange: (flag: boolean) => void;
+  onVideoReady: (element: HTMLVideoElement | null) => void;
+  onStopStream: () => void;
+  onQuality: (value: QualityProfile) => void;
+}) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    onVideoReady(videoRef.current);
+    return () => onVideoReady(null);
+  }, [onVideoReady]);
+
+  useEffect(() => {
+    const element = stageRef.current;
+    if (!element) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'f' || event.key === 'F' || event.key === 'F11' || event.key === 'Escape') {
+        event.preventDefault();
+        if (document.fullscreenElement) void document.exitFullscreen();
+        else void element.requestFullscreen().catch(() => undefined);
+      }
+    };
+    element.addEventListener('keydown', onKeyDown);
+    return () => element.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const live = connected && streamMode === 'screen' && telemetry !== null;
+  const modeNote = !connected
+    ? 'Подключите телефон по PIN, чтобы начать трансляцию экрана.'
+    : pairingStatusMessage(pairingMessage, transport, streamMode);
+  const aspect = telemetry && telemetry.width > 0
+    ? `${telemetry.width} / ${telemetry.height}`
+    : '9 / 19.5';
+
   return (
-    <section className="panel preview-panel">
-      <div className="preview-toolbar"><span>ПРЕДПРОСМОТР ТЕЛЕФОНА</span><span>{connected ? 'Сопряжение подтверждено' : 'Нет подключения'}</span></div>
-      <div className="phone-stage">
-        <div className="phone-frame"><div className="phone-notch" /><span className="phone-placeholder-icon">▣</span><strong>{connected ? 'Поток ещё не запущен' : 'Нет сигнала'}</strong><small>{connected ? 'На этом этапе проверяется только защищённое сопряжение' : 'Подключите телефон, чтобы начать просмотр'}</small></div>
-      </div>
-      <div className="preview-actions">
-        <div className="button-group"><button type="button" disabled>Назад</button><button type="button" disabled>Домой</button><button type="button" disabled>Недавние</button></div>
-        <button type="button" className="secondary-button" disabled>На весь экран</button>
-      </div>
+    <section className="screen-layout">
+      <article className="panel preview-panel screen-panel">
+        <div className="preview-toolbar">
+          <span>ТРАНСЛЯЦИЯ ЭКРАНА ТЕЛЕФОНА</span>
+          <span className={`camera-state ${live ? 'running' : 'idle'}`} role="status">
+            {live ? 'Экран передаётся' : connected ? 'Ожидание потока' : 'Нет подключения'}
+          </span>
+        </div>
+        <div
+          className="screen-stage"
+          ref={stageRef}
+          tabIndex={0}
+          onDoubleClick={() => {
+            if (document.fullscreenElement) void document.exitFullscreen();
+            else void stageRef.current?.requestFullscreen().catch(() => undefined);
+          }}
+        >
+          <video
+            ref={videoRef}
+            className="screen-video"
+            style={{ aspectRatio: aspect }}
+            autoPlay
+            muted
+            playsInline
+          />
+          {!live && (
+            <div className="screen-empty">
+              <span className="phone-placeholder-icon">▣</span>
+              <strong>{connected ? 'Ожидаем видеопоток…' : 'Нет сигнала'}</strong>
+              <small>{modeNote}</small>
+            </div>
+          )}
+        </div>
+        <div className="screen-hints">
+          <span>F / F11 / Esc или двойной клик — во весь экран</span>
+          <label className="screen-aot">
+            <input
+              type="checkbox"
+              checked={alwaysOnTop}
+              onChange={(event) => onAlwaysOnTopChange(event.target.checked)}
+            />
+            Поверх всех окон
+          </label>
+        </div>
+      </article>
+
+      <aside className="panel screen-side">
+        <h2>Телеметрия телефона</h2>
+        {telemetry ? (
+          <div className="telemetry-grid">
+            <TelemetryCell label="Разрешение" value={`${telemetry.width}×${telemetry.height}`} />
+            <TelemetryCell label="FPS" value={telemetry.fps > 0 ? telemetry.fps.toFixed(1) : '—'} />
+            <TelemetryCell label="Битрейт" value={telemetry.bitrateKbps > 0 ? `${Math.round(telemetry.bitrateKbps)} кбит/с` : '—'} />
+            <TelemetryCell label="Батарея" value={telemetry.batteryPercent >= 0 ? `${telemetry.batteryPercent}%` : '—'} />
+            <TelemetryCell label="Питание" value={telemetry.charging ? 'Заряжается' : 'Батарея'} />
+            <TelemetryCell label="Нагрев" value={telemetry.thermal} />
+          </div>
+        ) : (
+          <p className="screen-side-note">
+            Телеметрия появится вместе с видеопотоком: частота кадров, битрейт, батарея и нагрев телефона.
+          </p>
+        )}
+        <div className="divider" />
+        <h2>Качество</h2>
+        <div className="quality-row">
+          {(['auto', 'max', 'economy'] as QualityProfile[]).map((profile) => (
+            <button
+              key={profile}
+              type="button"
+              className={`quality-chip ${telemetry?.quality === profile ? 'active' : ''}`}
+              disabled={!connected}
+              onClick={() => onQuality(profile)}
+            >
+              {qualityTitle(profile)}
+            </button>
+          ))}
+        </div>
+        <div className="divider" />
+        <button
+          type="button"
+          className="secondary-button danger"
+          disabled={!live}
+          onClick={onStopStream}
+        >
+          Остановить трансляцию
+        </button>
+        <p className="screen-side-note">
+          Сеанс при этом остаётся защищённым: возобновите трансляцию с телефона или переподключитесь без нового PIN после сбоя Wi-Fi.
+        </p>
+      </aside>
     </section>
+  );
+}
+
+function pairingStatusMessage(
+  pairingMessage: string,
+  transport: CameraTransportStatus,
+  streamMode: StreamMode | null,
+): string {
+  if (streamMode === 'camera') {
+    return 'Телефон сейчас передаёт режим «Веб-камера» — изображение идёт в виртуальную камеру Windows.';
+  }
+  if (transport.phase === 'error') return transport.message;
+  return pairingMessage;
+}
+
+function qualityTitle(profile: QualityProfile): string {
+  return profile === 'auto' ? 'Авто' : profile === 'max' ? 'Максимум' : 'Экономия';
+}
+
+function TelemetryCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="telemetry-cell">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

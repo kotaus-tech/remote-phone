@@ -652,6 +652,22 @@ function registerPairingIpc() {
     assertTrustedWindow(event);
     return startGpuTextureProbe();
   });
+  ipcMain.handle('window:set-always-on-top', (event, flag) => {
+    assertTrustedWindow(event);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(Boolean(flag));
+      return mainWindow.isAlwaysOnTop();
+    }
+    return false;
+  });
+  ipcMain.handle('window:toggle-fullscreen', (event) => {
+    assertTrustedWindow(event);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      return mainWindow.isFullScreen();
+    }
+    return false;
+  });
 }
 
 function createWindow() {

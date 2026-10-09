@@ -1,6 +1,7 @@
 package tech.kotaus.remotephone
 
 import android.content.Context
+import android.content.Intent
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
@@ -8,7 +9,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import org.java_websocket.WebSocket
-import org.java_websocket.drafts.Draft
 import org.java_websocket.drafts.Draft_6455
 import org.java_websocket.extensions.IExtension
 import org.java_websocket.handshake.ClientHandshake
@@ -35,6 +35,7 @@ private const val MAX_DIAGNOSTIC_CHARS = 12_000
 private const val SESSION_LIFETIME_SECONDS = 5 * 60
 private const val SERVICE_TYPE = "_remotephone._tcp."
 private const val LOG_TAG = "RemotePhonePairing"
+private const val RESUME_TIMEOUT_MS = 10_000L
 
 internal enum class PhonePairingPhase {
     IDLE,
@@ -50,6 +51,11 @@ internal enum class PhonePairingPhase {
 
 internal data class PhonePairingState(
     val phase: PhonePairingPhase = PhonePairingPhase.IDLE,
+    val mode: PhoneStreamMode? = null,
+    val quality: PhoneQualityProfile = PhoneQualityProfile.AUTO,
+    val allowControl: Boolean = false,
+    val streaming: Boolean = false,
+    val telemetry: PhoneTelemetry? = null,
     val pin: String? = null,
     val message: String = "Сеанс сопряжения не запущен.",
     val addresses: List<String> = emptyList(),
@@ -57,13 +63,28 @@ internal data class PhonePairingState(
     val attemptsUsed: Int = 0,
     val secondsRemaining: Int = 0,
     val discoveryAvailable: Boolean = false,
+    val awaitingResume: Boolean = false,
     val diagnosticText: String? = null
 )
 
-/** Owns one temporary phone-side PIN session and its local WebSocket endpoint. */
+/**
+ * Owns one temporary phone-side PIN session and its local WebSocket endpoint.
+ * Lives inside the foreground service: it must not be tied to an activity.
+ *
+ * After a successful OPAQUE authentication the session stays resumable: the
+ * WebSocket endpoint keeps listening, the signal cipher and its sequence
+ * counters survive a transport drop, and the peer can reconnect with the same
+ * session id without a new PIN while the phone keeps the session running.
+ */
 internal class PhonePairingHost(
     context: Context,
-    private val onStateChanged: (PhonePairingState) -> Unit
+    val mode: PhoneStreamMode,
+    val quality: PhoneQualityProfile,
+    val allowControl: Boolean,
+    private val projectionData: Intent?,
+    private val onStateChanged: (PhonePairingState) -> Unit,
+    private val onMediaTelemetry: (PhoneTelemetry) -> Unit,
+    private val onMediaEnded: (String) -> Unit
 ) : AutoCloseable {
     private val applicationContext = context.applicationContext
     private val nsdManager = applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -72,10 +93,14 @@ internal class PhonePairingHost(
         Thread(runnable, "remote-phone-pairing").apply { isDaemon = true }
     }
     private val lock = Any()
-    private val cameraPeerLock = Any()
+    private val mediaLock = Any()
     private val signalCipherLock = Any()
 
-    @Volatile private var state = PhonePairingState()
+    @Volatile private var state = PhonePairingState(
+        mode = mode,
+        quality = quality,
+        allowControl = allowControl
+    )
     @Volatile private var handle = 0L
     @Volatile private var pinForUi: String? = null
     @Volatile private var server: PairingWebSocketServer? = null
@@ -84,13 +109,15 @@ internal class PhonePairingHost(
     @Volatile private var serviceRegistered = false
     @Volatile private var expiryAtElapsedRealtime = 0L
     @Volatile private var lastFailureMessage: String? = null
-    @Volatile private var cameraEnabled = false
-    @Volatile private var cameraPeer: PhoneCameraWebRtc? = null
     @Volatile private var closed = false
+    @Volatile private var mediaSession: PhoneMediaSession? = null
+    @Volatile private var resumeDeadlineTask: Runnable? = null
 
     private val countdownTask = object : Runnable {
         override fun run() {
             if (closed || handle == 0L || expiryAtElapsedRealtime == 0L) return
+            // Once authenticated the PIN window no longer bounds the session.
+            if (state.phase == PhonePairingPhase.AUTHENTICATED) return
             val remainingMillis = (expiryAtElapsedRealtime - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
             val remainingSeconds = ((remainingMillis + 999L) / 1000L).toInt()
             if (remainingSeconds == 0) {
@@ -104,14 +131,20 @@ internal class PhonePairingHost(
 
     fun currentState(): PhonePairingState = state
 
-    fun start(cameraEnabled: Boolean = false) {
+    fun start() {
         if (closed || state.phase !in setOf(PhonePairingPhase.IDLE, PhonePairingPhase.CLOSED, PhonePairingPhase.FAILED, PhonePairingPhase.EXPIRED, PhonePairingPhase.LOCKED)) {
             return
         }
-        this.cameraEnabled = cameraEnabled
         publish(PhonePairingState(
             phase = PhonePairingPhase.STARTING,
-            message = if (cameraEnabled) "Запрашиваем PIN и готовим передачу с камеры…" else "Создаём PIN и защищённый сеанс…"
+            mode = mode,
+            quality = quality,
+            allowControl = allowControl,
+            message = if (mode == PhoneStreamMode.CAMERA) {
+                "Создаём PIN и готовим передачу с камеры…"
+            } else {
+                "Создаём PIN и готовим трансляцию экрана…"
+            }
         ))
         worker.execute {
             val createStarted = SystemClock.elapsedRealtime()
@@ -176,110 +209,79 @@ internal class PhonePairingHost(
         worker.shutdown()
     }
 
-    private fun onServerStarted(webSocketServer: PairingWebSocketServer, port: Int) {
-        if (closed || server !== webSocketServer) return
-        val addresses = localIpv4Addresses()
-        val currentPin = pinForUi
-        publish(PhonePairingState(
-            phase = PhonePairingPhase.WAITING,
-            pin = currentPin,
-            message = "Ожидаем компьютер в этой же локальной сети.",
-            addresses = addresses,
-            port = port,
-            attemptsUsed = safeAttemptsUsed(),
-            secondsRemaining = ((expiryAtElapsedRealtime - SystemClock.elapsedRealtime() + 999L) / 1000L)
-                .coerceAtLeast(0L).toInt()
-        ))
-        registerService(webSocketServer.serviceName, port)
-        mainHandler.removeCallbacks(countdownTask)
-        mainHandler.post(countdownTask)
+    // ------------------------------------------------------------------
+    // Media session control (called by the foreground service)
+    // ------------------------------------------------------------------
+
+    fun applyQualityToMedia(next: PhoneQualityProfile) {
+        mediaSession?.applyQuality(next)
+        state = state.copy(quality = next)
     }
 
-    private fun registerService(serviceName: String, port: Int) {
-        val info = NsdServiceInfo().apply {
-            this.serviceName = serviceName
-            serviceType = SERVICE_TYPE
-            this.port = port
-            setAttribute("version", "1")
-            setAttribute("profile", "0001")
+    fun rotateMediaCapture() {
+        mediaSession?.rotateCapture()
+    }
+
+    fun stopMedia(message: String) {
+        val session = synchronized(mediaLock) {
+            mediaSession.also { mediaSession = null }
         }
-        val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(registeredServiceInfo: NsdServiceInfo) {
-                if (closed || handle == 0L || registrationListener !== this) {
-                    runCatching { nsdManager.unregisterService(this) }
-                    return
+        session?.close()
+        if (handle != 0L && state.phase == PhonePairingPhase.AUTHENTICATED) {
+            publish(state.copy(streaming = false, telemetry = null, message = message))
+        }
+        onMediaEnded(message)
+    }
+
+    private fun getOrCreateMediaSession(connection: WebSocket, pairingHandle: Long): PhoneMediaSession {
+        synchronized(mediaLock) {
+            mediaSession?.let { return it }
+            var createdSession: PhoneMediaSession? = null
+            val created = PhoneMediaSession(
+                applicationContext,
+                mode,
+                quality,
+                projectionData,
+                sendSignal = { outgoing ->
+                    val current = activeConnection
+                    if (current != null && handle == pairingHandle) {
+                        sendEncryptedRtcSignal(current, pairingHandle, outgoing)
+                    }
+                },
+                onStatus = { message ->
+                    if (handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
+                        publish(state.copy(streaming = true, message = message))
+                    }
+                },
+                onTelemetry = { telemetry ->
+                    if (handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
+                        onMediaTelemetry(telemetry)
+                    }
+                },
+                onEnded = { message ->
+                    synchronized(mediaLock) {
+                        if (mediaSession != null && mediaSession === createdSession) mediaSession = null
+                    }
+                    if (handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
+                        publish(state.copy(streaming = false, telemetry = null, message = message))
+                    }
+                    onMediaEnded(message)
                 }
-                serviceRegistered = true
-                publish(state.copy(discoveryAvailable = true))
-            }
-
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                if (registrationListener !== this) return
-                serviceRegistered = false
-                publish(state.copy(
-                    discoveryAvailable = false,
-                    message = "Поиск телефона может быть недоступен; используйте адрес и порт ниже."
-                ))
-            }
-
-            override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-                if (registrationListener === this) serviceRegistered = false
-            }
-
-            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                if (registrationListener === this) serviceRegistered = false
-            }
-        }
-        registrationListener = listener
-        runCatching {
-            nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
-        }.onFailure {
-            serviceRegistered = false
-            publish(state.copy(
-                discoveryAvailable = false,
-                message = "Поиск телефона недоступен; используйте адрес и порт ниже."
-            ))
+            )
+            createdSession = created
+            mediaSession = created
+            return created
         }
     }
 
-    private fun stopInternal(
-        finalPhase: PhonePairingPhase,
-        finalMessage: String,
-        diagnosticText: String? = null
-    ) {
-        mainHandler.removeCallbacks(countdownTask)
-        val peerToClose = synchronized(cameraPeerLock) {
-            cameraEnabled = false
-            cameraPeer.also { cameraPeer = null }
-        }
-        peerToClose?.close()
-        val currentServer = server
-        server = null
-        if (currentServer != null) {
-            runCatching { currentServer.stop(1000) }
-        }
-        activeConnection = null
-
-        val listener = registrationListener
-        registrationListener = null
-        if (listener != null && serviceRegistered) {
-            runCatching { nsdManager.unregisterService(listener) }
-        }
-        serviceRegistered = false
-
-        val oldHandle = handle
-        handle = 0L
-        pinForUi = null
-        expiryAtElapsedRealtime = 0L
-        if (oldHandle != 0L) runCatching {
-            synchronized(signalCipherLock) { NativePairing.phoneDestroy(oldHandle) }
-        }
-        publish(PhonePairingState(
-            phase = finalPhase,
-            message = finalMessage,
-            diagnosticText = diagnosticText
-        ))
+    private fun closeMediaQuietly() {
+        val session = synchronized(mediaLock) { mediaSession.also { mediaSession = null } }
+        session?.close()
     }
+
+    // ------------------------------------------------------------------
+    // State helpers
+    // ------------------------------------------------------------------
 
     private fun diagnosticDetails(stage: String, error: Throwable): String {
         val heading = "$stage\n"
@@ -353,6 +355,10 @@ internal class PhonePairingHost(
         return true
     }
 
+    // ------------------------------------------------------------------
+    // Protected SIGNAL parsing and routing
+    // ------------------------------------------------------------------
+
     private fun parseRtcSignal(payload: ByteArray): JSONObject {
         if (payload.isEmpty() || payload.size > MAX_RTC_SIGNAL_BYTES) {
             throw IllegalArgumentException("RTC_SIGNAL_SIZE")
@@ -405,45 +411,27 @@ internal class PhonePairingHost(
     private fun handleRtcSignal(connection: WebSocket, pairingHandle: Long, signal: JSONObject) {
         val type = signal.optString("type")
         if (type == "bye" || type == "error") {
-            val peerToClose = synchronized(cameraPeerLock) {
-                if (connection !== activeConnection || handle != pairingHandle) return
-                cameraPeer.also { cameraPeer = null }
+            val code = signal.optString("code")
+            val message = when {
+                type == "bye" -> "Компьютер завершил видеосеанс."
+                code == "CAMERA_NOT_ENABLED" -> "Компьютер сообщил: камера не разрешена."
+                code.isNotBlank() -> "Компьютер сообщил об ошибке видеосеанса ($code)."
+                else -> "Компьютер сообщил об ошибке видеосеанса."
             }
-            if (peerToClose?.hasFailed() == false
-                && handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
-                val message = if (type == "error") {
-                    "Компьютер сообщил об ошибке видеосеанса (${signal.optString("code")})."
-                } else {
-                    "Компьютер завершил видеосеанс."
+            cancelResumeDeadline()
+            closeMediaQuietly()
+            if (connection === activeConnection || activeConnection == null) {
+                if (state.phase == PhonePairingPhase.AUTHENTICATED) {
+                    publish(state.copy(streaming = false, telemetry = null, message = message))
                 }
-                publish(state.copy(message = message))
             }
-            peerToClose?.close()
             return
         }
 
-        synchronized(cameraPeerLock) {
+        synchronized(mediaLock) {
             if (connection !== activeConnection || handle != pairingHandle) return
-            if (!cameraEnabled) {
-                if (type == "offer") {
-                    sendEncryptedRtcSignal(
-                        connection,
-                        pairingHandle,
-                        JSONObject().put("v", 1).put("type", "error").put("code", "CAMERA_NOT_ENABLED")
-                    )
-                    publish(state.copy(message = "Выберите режим «Веб-камера» и разрешите доступ к камере телефона."))
-                }
-                return
-            }
-            val session = cameraPeer ?: PhoneCameraWebRtc(
-                applicationContext,
-                sendSignal = { outgoing -> sendEncryptedRtcSignal(connection, pairingHandle, outgoing) },
-                onStatus = { message ->
-                    if (handle == pairingHandle && state.phase == PhonePairingPhase.AUTHENTICATED) {
-                        publish(state.copy(message = message))
-                    }
-                }
-            ).also { cameraPeer = it }
+            cancelResumeDeadline()
+            val session = getOrCreateMediaSession(connection, pairingHandle)
             session.handleSignal(signal)
         }
     }
@@ -456,7 +444,7 @@ internal class PhonePairingHost(
         }
         val encrypted = try {
             synchronized(signalCipherLock) {
-                if (connection !== activeConnection || handle != pairingHandle
+                if (handle != pairingHandle
                     || !NativePairing.phoneIsAuthenticated(pairingHandle)) {
                     throw IllegalStateException("RTC_SIGNAL_SESSION_CLOSED")
                 }
@@ -470,6 +458,33 @@ internal class PhonePairingHost(
         // This buffer is ciphertext; do not overwrite it before the network write completes.
         connection.send(encrypted)
     }
+
+    private fun scheduleResumeDeadline(connection: WebSocket, pairingHandle: Long) {
+        cancelResumeDeadline()
+        val task = Runnable {
+            resumeDeadlineTask = null
+            if (closed || handle != pairingHandle) return@Runnable
+            if (connection !== activeConnection) return@Runnable
+            // The resumed peer never proved possession of the session keys.
+            connection.close(1008, "Возобновление не подтверждено")
+            activeConnection = null
+            publish(state.copy(
+                awaitingResume = true,
+                message = "Повторное подключение не подтверждено. Компьютер может попробовать снова."
+            ))
+        }
+        resumeDeadlineTask = task
+        mainHandler.postDelayed(task, RESUME_TIMEOUT_MS)
+    }
+
+    private fun cancelResumeDeadline() {
+        resumeDeadlineTask?.let { mainHandler.removeCallbacks(it) }
+        resumeDeadlineTask = null
+    }
+
+    // ------------------------------------------------------------------
+    // WebSocket endpoint
+    // ------------------------------------------------------------------
 
     private inner class PairingWebSocketServer(
         private val pairingHandle: Long,
@@ -492,13 +507,41 @@ internal class PhonePairingHost(
                 connection.close(1008, "Только локальная сеть")
                 return
             }
-            synchronized(lock) {
-                if (closed || handle != pairingHandle || activeConnection != null || state.phase == PhonePairingPhase.AUTHENTICATED) {
+            val resuming = synchronized(lock) {
+                if (closed || handle != pairingHandle || activeConnection != null) {
                     connection.close(1008, "Сеанс занят")
                     return
                 }
-                activeConnection = connection
-                lastFailureMessage = null
+                if (state.phase == PhonePairingPhase.AUTHENTICATED) {
+                    activeConnection = connection
+                    true
+                } else {
+                    activeConnection = connection
+                    lastFailureMessage = null
+                    false
+                }
+            }
+            if (resuming) {
+                try {
+                    val resumedHello = synchronized(signalCipherLock) {
+                        if (connection !== activeConnection || handle != pairingHandle) {
+                            throw IllegalStateException("PAIRING_FAILED")
+                        }
+                        NativePairing.phoneResumeConnection(pairingHandle)
+                            ?: throw IllegalStateException("PAIRING_FAILED")
+                    }
+                    connection.send(resumedHello)
+                    publish(state.copy(
+                        awaitingResume = true,
+                        message = "Соединение восстанавливается без нового PIN…"
+                    ))
+                    scheduleResumeDeadline(connection, pairingHandle)
+                } catch (error: Exception) {
+                    Log.e(LOG_TAG, "Не удалось возобновить защищённый сеанс", error)
+                    activeConnection = null
+                    failConnection(connection, "Не удалось возобновить защищённый сеанс.", error)
+                }
+                return
             }
             try {
                 val hello = synchronized(signalCipherLock) {
@@ -544,6 +587,7 @@ internal class PhonePairingHost(
                     }
                     try {
                         val signal = parseRtcSignal(plaintext)
+                        cancelResumeDeadline()
                         handleRtcSignal(connection, pairingHandle, signal)
                     } finally {
                         plaintext.fill(0)
@@ -561,11 +605,13 @@ internal class PhonePairingHost(
                 val attempts = handshakeResult.second
                 if (reply != null) connection.send(reply)
                 if (handshakeResult.third) {
+                    mainHandler.removeCallbacks(countdownTask)
                     publish(state.copy(
                         phase = PhonePairingPhase.AUTHENTICATED,
                         pin = null,
                         attemptsUsed = attempts,
-                        message = "Защищённое сопряжение подтверждено. Не закрывайте экран до остановки сеанса."
+                        awaitingResume = false,
+                        message = "Защищённое сопряжение подтверждено. Трансляция переживёт сворачивание приложения и блокировку экрана."
                     ))
                 } else {
                     publish(state.copy(attemptsUsed = attempts))
@@ -632,9 +678,13 @@ internal class PhonePairingHost(
                 runCatching { NativePairing.phoneIsAuthenticated(pairingHandle) }.getOrDefault(false)
             }
             if (authenticated) {
-                worker.execute {
-                    stopInternal(PhonePairingPhase.CLOSED, "Защищённое соединение закрыто. Создайте новый PIN для следующего сеанса.")
-                }
+                cancelResumeDeadline()
+                // Keep the session, the media stream and the endpoint alive so
+                // the computer can reconnect without a new PIN.
+                publish(state.copy(
+                    awaitingResume = true,
+                    message = "Соединение прервано. Компьютер может переподключиться без нового PIN, пока сеанс активен."
+                ))
             } else {
                 synchronized(signalCipherLock) {
                     if (handle == pairingHandle) runCatching { NativePairing.phoneAbortConnection(pairingHandle) }
@@ -677,12 +727,120 @@ internal class PhonePairingHost(
             }
             lastFailureMessage = message
             publish(state.copy(
-                phase = PhonePairingPhase.WAITING,
+                phase = if (state.phase == PhonePairingPhase.AUTHENTICATED) state.phase else PhonePairingPhase.WAITING,
                 attemptsUsed = safeAttemptsUsed(),
                 message = message,
                 diagnosticText = error?.let { diagnosticDetails("Обработка соединения", it) } ?: state.diagnosticText
             ))
             connection.close(1008, "Сопряжение отклонено")
         }
+    }
+
+    private fun onServerStarted(webSocketServer: PairingWebSocketServer, port: Int) {
+        if (closed || server !== webSocketServer) return
+        val addresses = localIpv4Addresses()
+        val currentPin = pinForUi
+        publish(PhonePairingState(
+            phase = PhonePairingPhase.WAITING,
+            mode = mode,
+            quality = quality,
+            allowControl = allowControl,
+            pin = currentPin,
+            message = "Ожидаем компьютер в этой же локальной сети.",
+            addresses = addresses,
+            port = port,
+            attemptsUsed = safeAttemptsUsed(),
+            secondsRemaining = ((expiryAtElapsedRealtime - SystemClock.elapsedRealtime() + 999L) / 1000L)
+                .coerceAtLeast(0L).toInt()
+        ))
+        registerService(webSocketServer.serviceName, port)
+        mainHandler.removeCallbacks(countdownTask)
+        mainHandler.post(countdownTask)
+    }
+
+    private fun registerService(serviceName: String, port: Int) {
+        val info = NsdServiceInfo().apply {
+            this.serviceName = serviceName
+            serviceType = SERVICE_TYPE
+            this.port = port
+            setAttribute("version", "1")
+            setAttribute("profile", "0001")
+        }
+        val listener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(registeredServiceInfo: NsdServiceInfo) {
+                if (closed || handle == 0L || registrationListener !== this) {
+                    runCatching { nsdManager.unregisterService(this) }
+                    return
+                }
+                serviceRegistered = true
+                publish(state.copy(discoveryAvailable = true))
+            }
+
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                if (registrationListener !== this) return
+                serviceRegistered = false
+                publish(state.copy(
+                    discoveryAvailable = false,
+                    message = "Поиск телефона может быть недоступен; используйте адрес и порт ниже."
+                ))
+            }
+
+            override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
+                if (registrationListener === this) serviceRegistered = false
+            }
+
+            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                if (registrationListener === this) serviceRegistered = false
+            }
+        }
+        registrationListener = listener
+        runCatching {
+            nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+        }.onFailure {
+            serviceRegistered = false
+            publish(state.copy(
+                discoveryAvailable = false,
+                message = "Поиск телефона недоступен; используйте адрес и порт ниже."
+            ))
+        }
+    }
+
+    private fun stopInternal(
+        finalPhase: PhonePairingPhase,
+        finalMessage: String,
+        diagnosticText: String? = null
+    ) {
+        mainHandler.removeCallbacks(countdownTask)
+        cancelResumeDeadline()
+        closeMediaQuietly()
+        val currentServer = server
+        server = null
+        if (currentServer != null) {
+            runCatching { currentServer.stop(1000) }
+        }
+        activeConnection = null
+
+        val listener = registrationListener
+        registrationListener = null
+        if (listener != null && serviceRegistered) {
+            runCatching { nsdManager.unregisterService(listener) }
+        }
+        serviceRegistered = false
+
+        val oldHandle = handle
+        handle = 0L
+        pinForUi = null
+        expiryAtElapsedRealtime = 0L
+        if (oldHandle != 0L) runCatching {
+            synchronized(signalCipherLock) { NativePairing.phoneDestroy(oldHandle) }
+        }
+        publish(PhonePairingState(
+            phase = finalPhase,
+            mode = mode,
+            quality = quality,
+            allowControl = allowControl,
+            message = finalMessage,
+            diagnosticText = diagnosticText
+        ))
     }
 }

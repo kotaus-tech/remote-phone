@@ -61,7 +61,7 @@ internal fun PhonePairingCard(state: PhonePairingState) {
                 Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = if (authenticated) "Сопряжение подтверждено" else "Локальное сопряжение",
+                        text = heading,
                         color = TextPrimary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold

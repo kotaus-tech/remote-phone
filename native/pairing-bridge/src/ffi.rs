@@ -191,6 +191,33 @@ pub unsafe extern "C" fn rp_phone_start_connection(
     .unwrap_or(ERR_PANIC)
 }
 
+/// Re-advertises an authenticated session on a reconnected transport and
+/// returns the encoded HELLO frame length. The signal cipher and its sequence
+/// counters survive, so the peer resumes without a new PIN.
+#[no_mangle]
+pub unsafe extern "C" fn rp_phone_resume_connection(
+    handle: u64,
+    frame_out: *mut u8,
+    frame_capacity: usize,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if frame_out.is_null() || frame_capacity < 34 {
+            return ERR_BUFFER_TOO_SMALL;
+        }
+        with_endpoint(handle, |endpoint| {
+            let Endpoint::Phone(session) = endpoint else {
+                return Err(ERR_INVALID_HANDLE);
+            };
+            let frame = session
+                .resume_connection()
+                .map_err(map_handshake_error)?;
+            write_output(frame_out, frame_capacity, &frame)
+        })
+        .unwrap_or_else(|error| error)
+    }))
+    .unwrap_or(ERR_PANIC)
+}
+
 /// Feeds one complete binary frame to the phone state machine. Returns zero
 /// after a valid AUTH_ACK, a positive reply length, or a negative error code.
 #[no_mangle]

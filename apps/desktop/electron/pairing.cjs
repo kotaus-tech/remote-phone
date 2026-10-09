@@ -69,6 +69,7 @@ class PairingController {
     this.devices = new Map();
     this.native = null;
     this.activeConnection = null;
+    this.resume = null;
     this.discoveryError = false;
   }
 
@@ -200,6 +201,143 @@ class PairingController {
     });
   }
 
+  /** Keeps the authenticated native handle and starts reconnect attempts. */
+  beginResume({ sessionId, address, port, deviceName, handle }) {
+    this.cancelResume();
+    this.resume = {
+      sessionId,
+      address,
+      port,
+      deviceName,
+      handle,
+      attemptsLeft: 40,
+      timer: null,
+      stopped: false,
+    };
+    this.sendStatus('reconnecting', 'Соединение прервано. Переподключаемся к телефону без нового PIN…');
+    this.scheduleResumeAttempt();
+  }
+
+  scheduleResumeAttempt() {
+    const resume = this.resume;
+    if (!resume || resume.stopped) return;
+    if (resume.attemptsLeft <= 0) {
+      const handle = resume.handle;
+      resume.handle = 0n;
+      this.resume = null;
+      if (handle !== 0n && this.native) {
+        try {
+          this.native.pcDestroy(handle);
+        } catch (_error) {
+          // Native state is discarded with the process-wide map anyway.
+        }
+      }
+      this.sendStatus('closed', 'Телефон недоступен для переподключения. Создайте новый PIN на телефоне.');
+      return;
+    }
+    resume.attemptsLeft -= 1;
+    this.attemptResumeConnection(resume);
+    resume.timer = setTimeout(() => {
+      if (this.resume === resume && !this.activeConnection) this.scheduleResumeAttempt();
+    }, 3000);
+  }
+
+  attemptResumeConnection(resume) {
+    const host = toWebSocketHost(resume.address);
+    const socket = new WebSocket(`ws://${host}:${resume.port}`, {
+      maxPayload: MAX_FRAME_BYTES,
+      perMessageDeflate: false,
+      handshakeTimeout: 2500,
+    });
+    resume.socket = socket;
+    socket.on('message', (data, isBinary) => {
+      if (!isBinary || this.resume !== resume) return;
+      const frame = Buffer.from(data);
+      try {
+        if (frame.length < 29 || frame[0] !== 0x52 || frame[1] !== 0x56 || frame[2] !== 0x50 || frame[3] !== 0x31
+          || frame[4] !== 0x01 || !frame.subarray(5, 21).equals(resume.sessionId)) {
+          // Not our resumable session; stop trying and require a new PIN.
+          this.stopResume('Телефон создал новый сеанс. Введите новый PIN для подключения.');
+          return;
+        }
+        clearTimeout(resume.timer);
+        this.resume = null;
+        const connection = {
+          socket,
+          handle: resume.handle,
+          stage: 'authenticated',
+          pinBytes: Buffer.alloc(0),
+          resolved: true,
+          timer: null,
+          authenticated: true,
+          intentionalClose: false,
+          helloSessionId: Buffer.from(resume.sessionId),
+        };
+        this.activeConnection = connection;
+        this.sendStatus('authenticated', 'Соединение с телефоном восстановлено без нового PIN. Возобновляем видеоканал…');
+      } finally {
+        frame.fill(0);
+      }
+    });
+    socket.on('error', () => {
+      socket.terminate();
+    });
+    socket.on('close', () => {
+      if (this.resume === resume && !this.activeConnection) {
+        // The next scheduled attempt will run.
+      }
+    });
+  }
+
+  stopResume(message) {
+    const resume = this.resume;
+    if (!resume) return;
+    resume.stopped = true;
+    clearTimeout(resume.timer);
+    const handle = resume.handle;
+    resume.handle = 0n;
+    this.resume = null;
+    if (resume.socket) {
+      try {
+        resume.socket.terminate();
+      } catch (_error) {
+        // The socket is already gone.
+      }
+    }
+    if (handle !== 0n && this.native) {
+      try {
+        this.native.pcDestroy(handle);
+      } catch (_error) {
+        // Native state is discarded anyway.
+      }
+    }
+    this.sendStatus('closed', message);
+  }
+
+  cancelResume() {
+    const resume = this.resume;
+    if (!resume) return;
+    resume.stopped = true;
+    clearTimeout(resume.timer);
+    const handle = resume.handle;
+    resume.handle = 0n;
+    this.resume = null;
+    if (resume.socket) {
+      try {
+        resume.socket.terminate();
+      } catch (_error) {
+        // The socket is already gone.
+      }
+    }
+    if (handle !== 0n && this.native) {
+      try {
+        this.native.pcDestroy(handle);
+      } catch (_error) {
+        // Native state is discarded anyway.
+      }
+    }
+  }
+
   handleFrame(connection, frame, resolveOnce) {
     if (frame.length === 0 || frame.length > MAX_FRAME_BYTES) {
       throw new Error('Размер сообщения не соответствует протоколу.');
@@ -208,6 +346,10 @@ class PairingController {
     if (!native) throw new Error('Общий модуль сопряжения недоступен.');
 
     if (connection.stage === 'hello') {
+      if (frame.length < 29 || frame[0] !== 0x52 || frame[1] !== 0x56 || frame[2] !== 0x50 || frame[3] !== 0x31) {
+        throw new Error('Первый кадр телефона не является HELLO защищённого протокола.');
+      }
+      connection.helloSessionId = Buffer.from(frame.subarray(5, 21));
       const handle = native.pcStart(connection.pinBytes, connection.pinBytes.length, frame, frame.length);
       connection.pinBytes.fill(0);
       if (handle === 0n || handle === 0) throw new Error('Не удалось начать обмен PIN.');
@@ -323,6 +465,7 @@ class PairingController {
   }
 
   disconnect() {
+    this.cancelResume();
     const connection = this.activeConnection;
     if (!connection) return;
     connection.intentionalClose = true;

@@ -8,6 +8,7 @@ object NativePairing {
 
     external fun phoneCreate(): ByteArray?
     external fun phoneStartConnection(handle: Long): ByteArray?
+    external fun phoneResumeConnection(handle: Long): ByteArray?
     external fun phoneHandleFrame(handle: Long, frame: ByteArray): ByteArray?
     external fun phoneIsAuthenticated(handle: Long): Boolean
     external fun phoneAttemptsUsed(handle: Long): Int
