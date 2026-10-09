@@ -70,8 +70,14 @@ class NativePairingInstrumentedTest {
         val sessionId = ByteArray(16)
         decoded.get(sessionId)
 
-        // Resume is impossible before authentication.
-        assertNull("resume before authentication must fail", NativePairing.phoneResumeConnection(phoneHandle))
+        // Resume is impossible before authentication: the JNI bridge throws.
+        var resumeRejected = false
+        try {
+            NativePairing.phoneResumeConnection(phoneHandle)
+        } catch (expected: IllegalStateException) {
+            resumeRejected = true
+        }
+        assertTrue("resume before authentication must be rejected", resumeRejected)
 
         var pcHandle = 0L
         try {

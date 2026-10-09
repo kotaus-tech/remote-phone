@@ -393,13 +393,12 @@ private fun ModeCard(
     val borderColor = if (selected) Mint.copy(alpha = 0.42f) else Outline
     val containerColor = if (selected) Mint.copy(alpha = 0.065f) else CardColor
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled,
         shape = RoundedCornerShape(17.dp),
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        border = BorderStroke(1.dp, borderColor),
-        enabled = enabled
+        border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
