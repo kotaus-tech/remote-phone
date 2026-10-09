@@ -320,8 +320,8 @@ private fun startSelectedMode(
             projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
         }
         PhoneStreamMode.CAMERA -> {
-            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED
+            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
             if (granted) {
                 PhoneSessionController.start(context, PhoneStreamMode.CAMERA, quality, allowControl, null)
             } else {

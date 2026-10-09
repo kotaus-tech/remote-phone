@@ -32,7 +32,16 @@ import tech.kotaus.remotephone.ui.theme.TextSecondary
 @Composable
 internal fun PhonePairingCard(state: PhonePairingState) {
     val authenticated = state.phase == PhonePairingPhase.AUTHENTICATED
-    val accent = if (authenticated) Mint else Color(0xFF94CAFF)
+    val accent = when {
+        authenticated && !state.awaitingResume -> Mint
+        else -> Color(0xFF94CAFF)
+    }
+    val heading = when {
+        authenticated && state.streaming -> "Трансляция идёт"
+        authenticated && state.awaitingResume -> "Соединение прервано — ожидание компьютера"
+        authenticated -> "Сопряжение подтверждено"
+        else -> "Локальное сопряжение"
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),

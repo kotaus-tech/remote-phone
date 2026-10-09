@@ -134,7 +134,7 @@ internal class PhoneMediaSession(
     private var textureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
-    private var capturer: CameraVideoCapturer? = null
+    private var capturer: VideoCapturer? = null
     private var captureWidth = 0
     private var captureHeight = 0
     private var captureFps = 0
@@ -309,7 +309,7 @@ internal class PhoneMediaSession(
                 .also { factory = it }
         }
 
-        val helper = SurfaceTextureHelper.create("remote-phone-capture", eglContext())
+        val helper = SurfaceTextureHelper.create("remote-phone-capture", eglContext().eglBaseContext)
             ?: throw IllegalStateException("Не создан SurfaceTextureHelper.")
         textureHelper = helper
         val source = factoryLocal.createVideoSource(mode == PhoneStreamMode.SCREEN)
@@ -390,7 +390,7 @@ internal class PhoneMediaSession(
         captureFps = quality.maxFpsMilli / 1000
 
         val projectionCallback = object : MediaProjection.Callback() {
-            override fun onProjectionStopped() {
+            override fun onStop() {
                 handler.post {
                     if (!closed && !ended) {
                         endSession("Трансляция экрана остановлена на телефоне.")
@@ -399,7 +399,7 @@ internal class PhoneMediaSession(
             }
         }
         val screenCapturer = ScreenCapturerAndroid(projectionIntent, projectionCallback)
-        capturer = object : CameraVideoCapturer by screenCapturer {}
+        capturer = screenCapturer
         screenCapturer.initialize(helper, context.applicationContext, source.capturerObserver)
         screenCapturer.startCapture(captureWidth, captureHeight, captureFps)
         onStatus(
@@ -407,20 +407,20 @@ internal class PhoneMediaSession(
         )
     }
 
-    /** Preserves the display aspect ratio while capping resolution per quality. */
+    /**
+     * Preserves the real display aspect ratio (landscape base) while capping
+     * the total pixel count per quality profile.
+     */
     private fun screenCaptureDimensions(profile: PhoneQualityProfile): Pair<Int, Int> {
-        val display: android.view.Display? = context.getSystemService(DisplayManager::class.java)
-            ?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
-        val metrics = if (android.os.Build.VERSION.SDK_INT >= 30) {
-            display?.let { context.display?.realSizeCompat() }
-        } else null
-        val real = metrics ?: android.util.DisplayMetrics().also { m ->
-            @Suppress("DEPRECATION")
-            (context.getSystemService(android.view.WindowManager::class.java)?.defaultDisplay
-                ?: display)?.getRealMetrics(m)
+        val bounds = runCatching {
+            context.getSystemService(WindowManager::class.java)?.currentWindowMetrics?.bounds
+        }.getOrNull()
+        var width = maxOf(bounds?.width() ?: 1920, bounds?.height() ?: 1080)
+        var height = minOf(bounds?.width() ?: 1920, bounds?.height() ?: 1080)
+        if (width <= 0 || height <= 0) {
+            width = 1920
+            height = 1080
         }
-        var width = maxOf(real.widthPixels, real.heightPixels)
-        var height = minOf(real.widthPixels, real.heightPixels)
         val maxPixels = profile.maxPixelCount
         if (width.toLong() * height > maxPixels) {
             val scale = kotlin.math.sqrt(maxPixels.toDouble() / (width.toLong() * height))
@@ -430,13 +430,6 @@ internal class PhoneMediaSession(
         width -= width % 2
         height -= height % 2
         return width to height
-    }
-
-    private fun android.view.Display.realSizeCompat(): android.util.DisplayMetrics {
-        val metrics = android.util.DisplayMetrics()
-        @Suppress("DEPRECATION")
-        getRealMetrics(metrics)
-        return metrics
     }
 
     private fun createPeerConnection(): PeerConnection {
@@ -486,6 +479,7 @@ internal class PhoneMediaSession(
             }
             override fun onSetSuccess() = Unit
             override fun onCreateFailure(error: String) = fail("Не удалось создать WebRTC-ответ.")
+            override fun onSetFailure(error: String) = fail("Не удалось применить локальное SDP-описание.")
         }, MediaConstraints())
     }
 

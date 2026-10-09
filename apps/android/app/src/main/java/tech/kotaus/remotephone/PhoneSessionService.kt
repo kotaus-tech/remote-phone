@@ -35,7 +35,7 @@ private const val EXTRA_PROJECTION = "projection"
  * The service owns the pairing host and the media session; the activity only
  * renders its published state and issues start/stop requests.
  */
-object PhoneSessionController {
+internal object PhoneSessionController {
     private val _uiState = MutableStateFlow(PhonePairingState())
     val uiState: StateFlow<PhonePairingState> = _uiState.asStateFlow()
 
