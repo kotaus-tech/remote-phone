@@ -254,12 +254,12 @@ internal class PhoneMediaSession(
             // the picture does not blink black during transport recovery.
             val existingPeer = peerConnection
             if (existingPeer != null && existingPeer.signalingState() == PeerConnection.SignalingState.STABLE) {
-                negotiate(existingPeer, needsTrack = false)
+                negotiate(existingPeer, needsTrack = false, offerSdp = sdp)
             } else {
                 disposeTransport()
                 val peer = createPeerConnection()
                 peerConnection = peer
-                negotiate(peer, needsTrack = true)
+                negotiate(peer, needsTrack = true, offerSdp = sdp)
             }
         } catch (_: Exception) {
             fail("Не удалось запустить источник видео (${mode.title}).")
@@ -267,7 +267,7 @@ internal class PhoneMediaSession(
     }
 
     /** Applies a desktop offer to `peer` and answers it. */
-    private fun negotiate(peer: PeerConnection, needsTrack: Boolean) {
+    private fun negotiate(peer: PeerConnection, needsTrack: Boolean, offerSdp: String) {
         peer.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(description: SessionDescription) = Unit
             override fun onSetSuccess() {
@@ -301,7 +301,7 @@ internal class PhoneMediaSession(
             }
             override fun onCreateFailure(error: String) = fail("Не удалось принять SDP-предложение.")
             override fun onSetFailure(error: String) = fail("Не удалось применить SDP-предложение.")
-        }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+        }, SessionDescription(SessionDescription.Type.OFFER, offerSdp))
     }
 
     /** Creates factory, EGL context, video source, track and starts capture once. */
