@@ -1,0 +1,58 @@
+name: Релиз из артефактов
+# Публикует GitHub Release с файлами APK/Setup из уже собранного зелёного
+# run «Сборка приложений». Запускается вручную (workflow_dispatch).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID завершённого run «Сборка приложений»"
+        required: true
+        type: string
+      tag:
+        description: "Тег релиза (например v0.2.0)"
+        required: true
+        type: string
+      title:
+        description: "Название релиза"
+        required: false
+        type: string
+      notes:
+        description: "Описание релиза (markdown)"
+        required: false
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # создание релиза и загрузка файлов
+      actions: read # скачивание артефактов чужого run
+    steps:
+      - name: Скачать артефакты исходного run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: dist
+
+      - name: Переименовать в пользовательские имена
+        run: |
+          apk=$(find dist -type f -name '*.apk' | head -1)
+          exe=$(find dist -type f -name '*.exe' | head -1)
+          [ -n "$apk" ] && mv "$apk" "dist/Видоискатель-Android.apk"
+          [ -n "$exe" ] && mv "$exe" "dist/Видоискатель-Windows-Setup-x64.exe"
+          ls -l dist
+
+      - name: Создать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ inputs.title }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          sha=$(gh api "repos/$GH_REPO/actions/runs/${{ inputs.run_id }}" --jq .head_sha)
+          gh release create "$TAG" --target "$sha" \
+            --title "$TITLE" --notes "$NOTES" \
+            dist/*
