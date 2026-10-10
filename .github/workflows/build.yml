@@ -264,12 +264,13 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # ASCII-имена: GitHub-загрузка с раннера срезает кириллицу в именах файлов.
       - name: Переименовать в пользовательские имена
         run: |
           apk=$(find dist -type f -name '*.apk' | head -1)
           exe=$(find dist -type f -name '*.exe' | head -1)
-          [ -n "$apk" ] && mv "$apk" "dist/Видоискатель-Android.apk"
-          [ -n "$exe" ] && mv "$exe" "dist/Видоискатель-Windows-Setup-x64.exe"
+          [ -n "$apk" ] && mv "$apk" "dist/Vidoiskatel-Android.apk"
+          [ -n "$exe" ] && mv "$exe" "dist/Vidoiskatel-Windows-Setup-x64.exe"
           ls -l dist
 
       - name: Опубликовать релиз
