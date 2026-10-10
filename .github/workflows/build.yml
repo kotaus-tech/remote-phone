@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - 'arena/**'
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
@@ -243,3 +245,40 @@ jobs:
           path: apps/desktop/release/*Setup*.exe
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: GitHub Release с установщиками
+    needs: [pairing-core, android, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # создание релиза и загрузка файлов
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Скачать артефакты этого run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'Видоискатель-*'
+          merge-multiple: true
+          path: dist
+
+      - name: Переименовать в пользовательские имена
+        run: |
+          apk=$(find dist -type f -name '*.apk' | head -1)
+          exe=$(find dist -type f -name '*.exe' | head -1)
+          [ -n "$apk" ] && mv "$apk" "dist/Видоискатель-Android.apk"
+          [ -n "$exe" ] && mv "$exe" "dist/Видоискатель-Windows-Setup-x64.exe"
+          ls -l dist
+
+      - name: Опубликовать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --verify-tag \
+            --title "Видоискатель $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            dist/*
