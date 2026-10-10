@@ -16,7 +16,7 @@ constexpr UINT32 kMaxFrameWidth = 3840;
 constexpr UINT32 kMaxFrameHeight = 2160;
 constexpr UINT32 kFrameSlotCount = 3;
 constexpr UINT32 kPixelFormatNv12 = 1;
-constexpr ULONGLONG kFrameStaleAfterMs = 1500;
+constexpr ULONGLONG kFrameStaleAfterMs = 3000;
 constexpr wchar_t kGlobalFrameChannelPrefix[] = L"Global\\Kotaus.RemotePhone.Frame.";
 
 // Binary stdin protocol from the desktop process to RemotePhone.VirtualCameraHost.exe.

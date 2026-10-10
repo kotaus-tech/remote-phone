@@ -249,46 +249,59 @@ internal class PhoneMediaSession(
 
         try {
             ensureVideoPipeline()
-            // A reconnecting desktop sends a fresh offer; attach it to the
-            // same video track instead of restarting capture.
-            disposeTransport()
-            val peer = createPeerConnection()
-            peerConnection = peer
-            peer.setRemoteDescription(object : SdpObserver {
-                override fun onCreateSuccess(description: SessionDescription) = Unit
-                override fun onSetSuccess() {
-                    handler.post {
-                        if (closed || peerConnection !== peer) return@post
-                        try {
-                            remoteDescriptionSet = true
-                            val track = videoTrack
-                            if (track == null) {
-                                fail("Видеотрек сеанса не готов.")
-                                return@post
-                            }
+            // Reconnect and ICE-restart offers renegotiate the existing peer
+            // connection: the video source, track and capture keep running, so
+            // the picture does not blink black during transport recovery.
+            val existingPeer = peerConnection
+            if (existingPeer != null && existingPeer.signalingState() == PeerConnection.SignalingState.STABLE) {
+                negotiate(existingPeer, needsTrack = false)
+            } else {
+                disposeTransport()
+                val peer = createPeerConnection()
+                peerConnection = peer
+                negotiate(peer, needsTrack = true)
+            }
+        } catch (_: Exception) {
+            fail("Не удалось запустить источник видео (${mode.title}).")
+        }
+    }
+
+    /** Applies a desktop offer to `peer` and answers it. */
+    private fun negotiate(peer: PeerConnection, needsTrack: Boolean) {
+        peer.setRemoteDescription(object : SdpObserver {
+            override fun onCreateSuccess(description: SessionDescription) = Unit
+            override fun onSetSuccess() {
+                handler.post {
+                    if (closed || peerConnection !== peer) return@post
+                    try {
+                        remoteDescriptionSet = true
+                        val track = videoTrack
+                        if (track == null) {
+                            fail("Видеотрек сеанса не готов.")
+                            return@post
+                        }
+                        if (needsTrack || peer.senders.none { it.track() is VideoTrack }) {
                             if (peer.addTrack(track, listOf("remote-phone-${mode.wireName}")) == null) {
                                 reject("VIDEO_TRACK_REJECTED", "WebRTC не принял видеотрек.")
                                 return@post
                             }
-                            for (candidate in pendingRemoteCandidates.toList()) {
-                                if (!peer.addIceCandidate(candidate)) {
-                                    fail("Не удалось применить ICE-кандидат компьютера.")
-                                    return@post
-                                }
-                            }
-                            pendingRemoteCandidates.clear()
-                            createAnswer(peer)
-                        } catch (_: Exception) {
-                            fail("Не удалось подготовить видеосеанс.")
                         }
+                        for (candidate in pendingRemoteCandidates.toList()) {
+                            if (!peer.addIceCandidate(candidate)) {
+                                fail("Не удалось применить ICE-кандидат компьютера.")
+                                return@post
+                            }
+                        }
+                        pendingRemoteCandidates.clear()
+                        createAnswer(peer)
+                    } catch (_: Exception) {
+                        fail("Не удалось подготовить видеосеанс.")
                     }
                 }
-                override fun onCreateFailure(error: String) = fail("Не удалось принять SDP-предложение.")
-                override fun onSetFailure(error: String) = fail("Не удалось применить SDP-предложение.")
-            }, SessionDescription(SessionDescription.Type.OFFER, sdp))
-        } catch (_: Exception) {
-            fail("Не удалось запустить источник видео (${mode.title}).")
-        }
+            }
+            override fun onCreateFailure(error: String) = fail("Не удалось принять SDP-предложение.")
+            override fun onSetFailure(error: String) = fail("Не удалось применить SDP-предложение.")
+        }, SessionDescription(SessionDescription.Type.OFFER, sdp))
     }
 
     /** Creates factory, EGL context, video source, track and starts capture once. */
@@ -356,9 +369,14 @@ internal class PhoneMediaSession(
                     && format.framerate.max >= 10_000
             }
             .maxWithOrNull(
-                compareBy<CameraEnumerationAndroid.CaptureFormat> {
-                    if (it.framerate.max >= maxFpsMilli) 1 else 0
+                compareBy<CameraEnumerationAndroid.CaptureFormat> { format ->
+                    // Product target: horizontal 16:9 output for the webcam.
+                    if (kotlin.math.abs(format.width * 9L - format.height * 16L)
+                        <= format.width * 0.05f * 9L) 1 else 0
                 }
+                    .thenBy { format ->
+                        if (format.framerate.max >= maxFpsMilli) 1 else 0
+                    }
                     .thenBy { it.width.toLong() * it.height }
                     .thenBy { minOf(maxFpsMilli, it.framerate.max) }
             )
@@ -408,18 +426,19 @@ internal class PhoneMediaSession(
     }
 
     /**
-     * Preserves the real display aspect ratio (landscape base) while capping
-     * the total pixel count per quality profile.
+     * Uses the real window bounds of the current orientation, capping the
+     * total pixel count per quality profile. Forcing a landscape base would
+     * letterbox a portrait phone and waste bitrate on black bars.
      */
     private fun screenCaptureDimensions(profile: PhoneQualityProfile): Pair<Int, Int> {
         val bounds = runCatching {
             context.getSystemService(WindowManager::class.java)?.currentWindowMetrics?.bounds
         }.getOrNull()
-        var width = maxOf(bounds?.width() ?: 1920, bounds?.height() ?: 1080)
-        var height = minOf(bounds?.width() ?: 1920, bounds?.height() ?: 1080)
+        var width = bounds?.width()?.coerceAtLeast(2) ?: 1080
+        var height = bounds?.height()?.coerceAtLeast(2) ?: 1920
         if (width <= 0 || height <= 0) {
-            width = 1920
-            height = 1080
+            width = 1080
+            height = 1920
         }
         val maxPixels = profile.maxPixelCount
         if (width.toLong() * height > maxPixels) {
@@ -528,6 +547,12 @@ internal class PhoneMediaSession(
             val encodings = parameters.encodings
             if (encodings.isEmpty()) return
             encodings.forEach { encoding -> encoding.maxBitrateBps = quality.maxBitrateBps }
+            // Screen shares must stay sharp (reader text); the camera keeps
+            // motion smooth instead. BALANCED would halve resolution first.
+            parameters.degradationPreference = when (mode) {
+                PhoneStreamMode.SCREEN -> RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+                PhoneStreamMode.CAMERA -> RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+            }
             sender.setParameters(parameters)
             senderMaxBitrateApplied = true
         }
@@ -614,6 +639,20 @@ internal class PhoneMediaSession(
         runCatching { channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true)) }
     }
 
+    /** Announces the active mode and quality as soon as the channel opens. */
+    private fun publishSessionInfoOverDataChannel() {
+        val channel = controlChannel ?: return
+        if (channel.state() != DataChannel.State.OPEN) return
+        val payload = JSONObject()
+            .put("v", 1)
+            .put("type", "session-info")
+            .put("mode", mode.wireName)
+            .put("quality", quality.wireName)
+        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+        if (bytes.size > MAX_DATA_MESSAGE_BYTES) return
+        runCatching { channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true)) }
+    }
+
     private fun readBatteryPercent(): Int = runCatching {
         val manager = context.getSystemService(BatteryManager::class.java) ?: return -1
         manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -684,6 +723,7 @@ internal class PhoneMediaSession(
                             if (closed || channel !== controlChannel) return@post
                             if (channel.state() == DataChannel.State.OPEN) {
                                 onStatus("Защищённый канал управления открыт.")
+                                publishSessionInfoOverDataChannel()
                                 publishTelemetryOverDataChannel(0.0, 0.0, captureWidth, captureHeight)
                             }
                         }

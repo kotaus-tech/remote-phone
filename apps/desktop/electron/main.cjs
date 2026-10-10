@@ -11,7 +11,8 @@ let cameraHostProcess = null;
 let ipcReady = false;
 let appIsQuitting = false;
 let cameraHostError = '';
-let cameraFrameWritePending = false;
+let cameraFrameWriteInFlight = false;
+let cameraQueuedFrame = null;
 let gpuTextureProbeSession = null;
 let gpuTextureProbeStatus = {
   phase: 'idle',
@@ -129,54 +130,68 @@ function stopCameraHost() {
   }
 }
 
-function writeCameraNv12Frame(frame) {
+function writeStdinPacket(stdin, packet) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => { cleanup(); reject(error); };
+    const onClose = () => { cleanup(); reject(new Error('host stdin закрыт')); };
+    const cleanup = () => {
+      stdin.removeListener('error', onError);
+      stdin.removeListener('close', onClose);
+    };
+    stdin.once('error', onError);
+    stdin.once('close', onClose);
+    stdin.write(packet, (error) => {
+      cleanup();
+      if (error) reject(error); else resolve();
+    });
+  });
+}
+
+/**
+ * Writes NV12 frames to the virtual camera host keeping only the newest
+ * queued frame: dropping intermediates adds no artificial latency, while the
+ * always-one-in-flight write prevents pipe backpressure stalls.
+ */
+async function writeCameraNv12Frame(frame) {
   if (!pairingController?.isAuthenticated()) {
-    return Promise.resolve({ ok: false, message: 'Сначала подключите телефон по PIN.' });
+    return { ok: false, message: 'Сначала подключите телефон по PIN.' };
   }
   const child = cameraHostProcess;
   const stdin = child?.stdin;
   if (!child || child.exitCode !== null || !stdin || stdin.destroyed || stdin.writableEnded
     || cameraStatus.phase !== 'running') {
-    return Promise.resolve({ ok: false, message: 'Виртуальная камера сейчас не готова принимать кадры.' });
+    return { ok: false, message: 'Виртуальная камера сейчас не готова принимать кадры.' };
   }
-  if (cameraFrameWritePending) {
-    return Promise.resolve({ ok: true, dropped: true });
+  if (cameraFrameWriteInFlight) {
+    cameraQueuedFrame = frame;
+    return { ok: true, dropped: true };
   }
 
-  let packet;
+  cameraFrameWriteInFlight = true;
   try {
-    packet = encodeNv12FramePacket(frame);
-  } catch (error) {
-    return Promise.resolve({ ok: false, message: error.message });
-  }
-
-  cameraFrameWritePending = true;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      stdin.removeListener('error', onError);
-      stdin.removeListener('close', onClose);
-      packet.fill(0);
-      cameraFrameWritePending = false;
-      if (error) {
-        cameraHostError = `stdin frame write: ${error.message || error}`;
-        resolve({ ok: false, message: 'Не удалось передать NV12-кадр виртуальной камере.' });
-        return;
+    let current = frame;
+    while (current) {
+      let packet;
+      try {
+        packet = encodeNv12FramePacket(current);
+      } catch (error) {
+        return { ok: false, message: error.message };
       }
-      resolve({ ok: true, dropped: false });
-    };
-    const onError = (error) => finish(error);
-    const onClose = () => finish(new Error('host stdin закрыт'));
-    stdin.once('error', onError);
-    stdin.once('close', onClose);
-    try {
-      stdin.write(packet, (error) => finish(error || null));
-    } catch (error) {
-      finish(error);
+      try {
+        await writeStdinPacket(stdin, packet);
+      } catch (error) {
+        packet.fill(0);
+        cameraHostError = `stdin frame write: ${error.message || error}`;
+        return { ok: false, message: 'Не удалось передать NV12-кадр виртуальной камере.' };
+      }
+      packet.fill(0);
+      current = cameraQueuedFrame;
+      cameraQueuedFrame = null;
     }
-  });
+    return { ok: true, dropped: false };
+  } finally {
+    cameraFrameWriteInFlight = false;
+  }
 }
 
 function getGpuTextureProbeProgramDataLogPath() {

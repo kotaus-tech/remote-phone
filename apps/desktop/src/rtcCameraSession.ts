@@ -75,6 +75,8 @@ const MAX_RGBA_BYTES = MAX_WIDTH * MAX_HEIGHT * 4;
 const MAX_RTC_CANDIDATES = 128;
 const CONNECTION_TIMEOUT_MS = 30_000;
 const FIRST_FRAME_TIMEOUT_MS = 15_000;
+const DISCONNECT_RESTART_DELAY_MS = 4_000;
+const MAX_ICE_RESTARTS = 3;
 
 export class RtcCameraSession {
   private readonly api: CameraTransportApi;
@@ -101,6 +103,8 @@ export class RtcCameraSession {
   private readonly frameScratch: VideoFrameScratchBuffers = { rgba: null, nv12: null };
   private connectionTimer: number | null = null;
   private firstFrameTimer: number | null = null;
+  private restartTimer: number | null = null;
+  private restartAttempts = 0;
 
   constructor(
     api: CameraTransportApi,
@@ -221,18 +225,45 @@ export class RtcCameraSession {
         if (this.stopped || this.peer !== peer) return;
         if (peer.connectionState === 'connected') {
           this.clearConnectionTimer();
-          this.clearFirstFrameTimer();
+          this.clearRestartTimer();
+          this.restartAttempts = 0;
           this.firstFrameTimer = window.setTimeout(() => {
             if (!this.stopped && this.framesWritten === 0) {
               this.fail('WebRTC подключён, но видеокадр от телефона не поступил.');
             }
           }, FIRST_FRAME_TIMEOUT_MS);
           this.onStatus({ phase: 'connected', message: 'WebRTC подключён; ожидаем первый кадр камеры телефона.' });
-        } else if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
-          this.fail('Не удалось установить локальный видеоканал WebRTC.');
+        } else if (peer.connectionState === 'closed') {
+          this.fail('Локальный видеоканал WebRTC закрыт.');
+        } else if (peer.connectionState === 'failed') {
+          // One quick ICE restart before giving up: a full restart re-runs
+          // pairing-side renegotiation and blinks the viewer black.
+          this.attemptIceRestart('Локальный ICE-маршрут потерян; перезапускаем соединение…');
         } else if (peer.connectionState === 'disconnected') {
           this.onStatus({ phase: 'connected', message: 'Восстанавливаем локальный видеоканал…' });
+          this.clearRestartTimer();
+          this.restartTimer = window.setTimeout(() => {
+            this.restartTimer = null;
+            if (!this.stopped && this.peer === peer && peer.connectionState !== 'connected') {
+              this.attemptIceRestart('Соединение не восстановилось само; перезапускаем ICE…');
+            }
+          }, DISCONNECT_RESTART_DELAY_MS);
         }
+      };
+      peer.onnegotiationneeded = () => {
+        // restartIce() requests a fresh offer; the phone answers on the same
+        // peer without restarting its capture.
+        if (this.stopped || this.peer !== peer || peer.signalingState !== 'stable') return;
+        void (async () => {
+          try {
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            const restartSdp = peer.localDescription?.sdp ?? offer.sdp ?? '';
+            await this.sendSignal({ v: 1, type: 'offer', sdp: restartSdp });
+          } catch {
+            // A failed restart offer falls through to the failure paths above.
+          }
+        })();
       };
 
       const offer = await peer.createOffer();
@@ -318,6 +349,7 @@ export class RtcCameraSession {
     this.stopped = true;
     this.clearConnectionTimer();
     this.clearFirstFrameTimer();
+    this.clearRestartTimer();
     this.cancelScheduledVideoFrame();
 
     if (this.controlChannel) {
@@ -387,6 +419,12 @@ export class RtcCameraSession {
         this.listeners.onStreamMode?.(message.mode);
       } else {
         this.listeners.onTelemetry?.(message);
+        // Telemetry doubles as a liveness signal with the mode inside; if the
+        // one-time session-info frame was missed, recover the mode from it.
+        if (this.streamMode !== message.mode) {
+          this.streamMode = message.mode;
+          this.listeners.onStreamMode?.(message.mode);
+        }
       }
     } catch {
       // Malformed control frames are dropped; media keeps flowing.
@@ -522,6 +560,34 @@ export class RtcCameraSession {
     this.connectionTimer = null;
   }
 
+  /** Tries a same-peer ICE restart; falls back to the full resume path. */
+  private attemptIceRestart(message: string): void {
+    const peer = this.peer;
+    if (this.stopped || !peer || peer.connectionState === 'closed') return;
+    if (this.restartAttempts >= MAX_ICE_RESTARTS) {
+      this.fail('Локальный видеоканал не удалось восстановить перезапуском ICE.');
+      return;
+    }
+    this.restartAttempts += 1;
+    this.clearRestartTimer();
+    this.onStatus({ phase: 'connected', message: `${message} (попытка ${this.restartAttempts} из ${MAX_ICE_RESTARTS})` });
+    try {
+      if (typeof peer.restartIce === 'function') {
+        peer.restartIce();
+      } else {
+        this.fail('Эта версия Chromium не поддерживает перезапуск ICE.');
+      }
+    } catch {
+      this.fail('Не удалось перезапустить локальный видеоканал.');
+    }
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer === null) return;
+    window.clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+  }
+
   private clearFirstFrameTimer(): void {
     if (this.firstFrameTimer === null) return;
     window.clearTimeout(this.firstFrameTimer);
@@ -586,35 +652,38 @@ async function copyFrameToPackedNv12(
 }
 
 // Convert each 2×2 RGBA block to limited-range BT.709 NV12; WebCodecs does not reliably copy directly to NV12.
+// Pixels are read as 32-bit words (little-endian RGBA in the low bytes), which measurably
+// reduces the per-frame CPU cost of this hot loop.
 function convertRgbaToPackedNv12(
   rgba: Uint8Array,
   packed: Uint8Array,
   width: number,
   height: number,
 ): void {
-  const lumaBytes = width * height;
-  const chromaOffset = lumaBytes;
+  const pixelCount = width * height;
+  const rgba32 = new Uint32Array(rgba.buffer, rgba.byteOffset, pixelCount);
+  const chromaOffset = pixelCount;
   for (let y = 0; y < height; y += 2) {
     const topRow = y * width;
     const bottomRow = topRow + width;
     for (let x = 0; x < width; x += 2) {
-      const topLeft = (topRow + x) * 4;
-      const topRight = topLeft + 4;
-      const bottomLeft = (bottomRow + x) * 4;
-      const bottomRight = bottomLeft + 4;
+      const topLeft = rgba32[topRow + x];
+      const topRight = rgba32[topRow + x + 1];
+      const bottomLeft = rgba32[bottomRow + x];
+      const bottomRight = rgba32[bottomRow + x + 1];
 
-      const redTopLeft = rgba[topLeft];
-      const greenTopLeft = rgba[topLeft + 1];
-      const blueTopLeft = rgba[topLeft + 2];
-      const redTopRight = rgba[topRight];
-      const greenTopRight = rgba[topRight + 1];
-      const blueTopRight = rgba[topRight + 2];
-      const redBottomLeft = rgba[bottomLeft];
-      const greenBottomLeft = rgba[bottomLeft + 1];
-      const blueBottomLeft = rgba[bottomLeft + 2];
-      const redBottomRight = rgba[bottomRight];
-      const greenBottomRight = rgba[bottomRight + 1];
-      const blueBottomRight = rgba[bottomRight + 2];
+      const redTopLeft = topLeft & 255;
+      const greenTopLeft = (topLeft >>> 8) & 255;
+      const blueTopLeft = (topLeft >>> 16) & 255;
+      const redTopRight = topRight & 255;
+      const greenTopRight = (topRight >>> 8) & 255;
+      const blueTopRight = (topRight >>> 16) & 255;
+      const redBottomLeft = bottomLeft & 255;
+      const greenBottomLeft = (bottomLeft >>> 8) & 255;
+      const blueBottomLeft = (bottomLeft >>> 16) & 255;
+      const redBottomRight = bottomRight & 255;
+      const greenBottomRight = (bottomRight >>> 8) & 255;
+      const blueBottomRight = (bottomRight >>> 16) & 255;
 
       // Q16 coefficients convert nonlinear sRGB/BT.709 RGB into limited-range BT.709 luma.
       packed[topRow + x] = 16 + ((redTopLeft * 11966 + greenTopLeft * 40254 + blueTopLeft * 4064 + 32768) >> 16);

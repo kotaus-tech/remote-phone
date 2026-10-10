@@ -265,9 +265,23 @@ function App() {
               onVideoReady={(element) => sessionRef.current?.attachExternalVideo(element)}
               onStopStream={() => sessionRef.current?.sendStopStream()}
               onQuality={(value) => sessionRef.current?.sendQuality(value)}
+              onGoToCamera={() => setPage('camera')}
             />
           )}
-          {page === 'camera' && <CameraPage status={cameraStatus} transport={cameraTransportStatus} gpuTextureProbe={gpuTextureProbeStatus} onRunGpuTextureProbe={() => void runGpuTextureProbe()} />}
+          {page === 'camera' && (
+            <CameraPage
+              status={cameraStatus}
+              transport={cameraTransportStatus}
+              gpuTextureProbe={gpuTextureProbeStatus}
+              onRunGpuTextureProbe={() => void runGpuTextureProbe()}
+              connected={connected}
+              streamMode={streamMode}
+              telemetry={phoneTelemetry}
+              onVideoReady={(element) => sessionRef.current?.attachExternalVideo(element)}
+              onStopStream={() => sessionRef.current?.sendStopStream()}
+              onQuality={(value) => sessionRef.current?.sendQuality(value)}
+            />
+          )}
           {page === 'settings' && <SettingsPage />}
           {page === 'diagnostics' && (
             <DiagnosticsPage
@@ -468,6 +482,7 @@ function ScreenPage({
   onVideoReady,
   onStopStream,
   onQuality,
+  onGoToCamera,
 }: {
   connected: boolean;
   pairingMessage: string;
@@ -479,6 +494,7 @@ function ScreenPage({
   onVideoReady: (element: HTMLVideoElement | null) => void;
   onStopStream: () => void;
   onQuality: (value: QualityProfile) => void;
+  onGoToCamera: () => void;
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -503,10 +519,8 @@ function ScreenPage({
     return () => element.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const live = connected && streamMode === 'screen' && telemetry !== null;
-  const modeNote = !connected
-    ? 'Подключите телефон по PIN, чтобы начать трансляцию экрана.'
-    : pairingStatusMessage(pairingMessage, transport, streamMode);
+  const live = connected && streamMode === 'screen';
+  const cameraActive = connected && streamMode === 'camera';
   const aspect = telemetry && telemetry.width > 0
     ? `${telemetry.width} / ${telemetry.height}`
     : '9 / 19.5';
@@ -517,7 +531,7 @@ function ScreenPage({
         <div className="preview-toolbar">
           <span>ТРАНСЛЯЦИЯ ЭКРАНА ТЕЛЕФОНА</span>
           <span className={`camera-state ${live ? 'running' : 'idle'}`} role="status">
-            {live ? 'Экран передаётся' : connected ? 'Ожидание потока' : 'Нет подключения'}
+            {live ? 'Экран передаётся' : cameraActive ? 'Телефон в режиме камеры' : connected ? 'Ожидание потока' : 'Нет подключения'}
           </span>
         </div>
         <div
@@ -529,19 +543,32 @@ function ScreenPage({
             else void stageRef.current?.requestFullscreen().catch(() => undefined);
           }}
         >
-          <video
-            ref={videoRef}
-            className="screen-video"
-            style={{ aspectRatio: aspect }}
-            autoPlay
-            muted
-            playsInline
-          />
+          {live && (
+            <video
+              ref={videoRef}
+              className="screen-video"
+              style={{ aspectRatio: aspect }}
+              autoPlay
+              muted
+              playsInline
+            />
+          )}
           {!live && (
             <div className="screen-empty">
               <span className="phone-placeholder-icon">▣</span>
-              <strong>{connected ? 'Ожидаем видеопоток…' : 'Нет сигнала'}</strong>
-              <small>{modeNote}</small>
+              <strong>{cameraActive ? 'Телефон передаёт веб-камеру' : connected ? 'Ожидаем видеопоток…' : 'Нет сигнала'}</strong>
+              <small>
+                {cameraActive
+                  ? 'Изображение камеры уходит в виртуальную камеру Windows; предпросмотр — на странице «Веб-камера».'
+                  : !connected
+                    ? 'Подключите телефон по PIN, чтобы начать трансляцию экрана.'
+                    : pairingStatusMessage(pairingMessage, transport, streamMode)}
+              </small>
+              {cameraActive && (
+                <button type="button" className="secondary-button" onClick={onGoToCamera}>
+                  Перейти в «Веб-камеру»
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -606,42 +633,37 @@ function ScreenPage({
   );
 }
 
-function pairingStatusMessage(
-  pairingMessage: string,
-  transport: CameraTransportStatus,
-  streamMode: StreamMode | null,
-): string {
-  if (streamMode === 'camera') {
-    return 'Телефон сейчас передаёт режим «Веб-камера» — изображение идёт в виртуальную камеру Windows.';
-  }
-  if (transport.phase === 'error') return transport.message;
-  return pairingMessage;
-}
-
-function qualityTitle(profile: QualityProfile): string {
-  return profile === 'auto' ? 'Авто' : profile === 'max' ? 'Максимум' : 'Экономия';
-}
-
-function TelemetryCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="telemetry-cell">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function CameraPage({
   status,
   transport,
   gpuTextureProbe,
   onRunGpuTextureProbe,
+  connected,
+  streamMode,
+  telemetry,
+  onVideoReady,
+  onStopStream,
+  onQuality,
 }: {
   status: CameraHostStatus;
   transport: CameraTransportStatus;
   gpuTextureProbe: GpuTextureProbeStatus;
   onRunGpuTextureProbe: () => void;
+  connected: boolean;
+  streamMode: StreamMode | null;
+  telemetry: PhoneTelemetryMessage | null;
+  onVideoReady: (element: HTMLVideoElement | null) => void;
+  onStopStream: () => void;
+  onQuality: (value: QualityProfile) => void;
 }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [mirror, setMirror] = useState(false);
+
+  useEffect(() => {
+    onVideoReady(videoRef.current);
+    return () => onVideoReady(null);
+  }, [onVideoReady]);
+
   const isRunning = status.phase === 'running';
   const statusLabel = isRunning
     ? 'Камера запущена'
@@ -652,22 +674,68 @@ function CameraPage({
         : status.phase === 'unavailable'
           ? 'Недоступна в этом режиме'
           : 'Не удалось запустить';
+  const cameraLive = connected && streamMode === 'camera';
 
   return (
     <section className="camera-layout">
       <article className="panel camera-panel">
         <div className="preview-toolbar">
-          <span>CPU-ПОТОК · NV12</span>
-          <span className={`camera-state ${status.phase}`} role="status">{statusLabel}</span>
+          <span>{cameraLive ? 'ЖИВАЯ КАМЕРА ТЕЛЕФОНА' : 'CPU-ПОТОК · NV12'}</span>
+          <span className={`camera-state ${cameraLive ? 'running' : status.phase}`} role="status">
+            {cameraLive ? 'Камера передаётся' : statusLabel}
+          </span>
         </div>
-        <div className={`camera-stage ${isRunning ? 'camera-stage-ready' : ''}`} aria-live="polite">
-          <div className="camera-status-icon" aria-hidden="true">◉</div>
-          <strong>{transport.phase === 'receiving' ? 'Отправка NV12-кадров в host-процесс' : isRunning ? 'Виртуальная камера запущена' : statusLabel}</strong>
-          <span>{transport.message}</span>
-          {transport.width && transport.height && <span>Источник: {transport.width}×{transport.height} NV12 · кадров: {transport.frames ?? 0}</span>}
+        <div className={`camera-stage ${cameraLive ? 'camera-stage-live' : isRunning ? 'camera-stage-ready' : ''}`} aria-live="polite">
+          {cameraLive ? (
+            <video
+              ref={videoRef}
+              className={`camera-preview ${mirror ? 'mirrored' : ''}`}
+              autoPlay
+              muted
+              playsInline
+            />
+          ) : (
+            <>
+              <div className="camera-status-icon" aria-hidden="true">◉</div>
+              <strong>{transport.phase === 'receiving' ? 'Отправка NV12-кадров в host-процесс' : isRunning ? 'Виртуальная камера запущена' : statusLabel}</strong>
+              <span>{transport.message}</span>
+            </>
+          )}
         </div>
+        {cameraLive && (
+          <div className="camera-live-controls">
+            <label className="screen-aot">
+              <input
+                type="checkbox"
+                checked={mirror}
+                onChange={(event) => setMirror(event.target.checked)}
+              />
+              Зеркально
+            </label>
+            <div className="quality-row">
+              {(['auto', 'max', 'economy'] as QualityProfile[]).map((profile) => (
+                <button
+                  key={profile}
+                  type="button"
+                  className={`quality-chip ${telemetry?.quality === profile ? 'active' : ''}`}
+                  onClick={() => onQuality(profile)}
+                >
+                  {qualityTitle(profile)}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="secondary-button danger" onClick={onStopStream}>
+              Остановить камеру
+            </button>
+          </div>
+        )}
         <div className="camera-actions-note">
-          Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Пока телефон не подключён, виртуальная камера выдаёт резервный синтетический кадр.
+          {cameraLive
+            ? `Телефон передаёт живое видео${transport.width && transport.height ? ` (${transport.width}×${transport.height})` : ''}; оно же уходит в виртуальную камеру Windows. Выберите «Видоискатель — тестовая камера» в OBS, Discord или Zoom.`
+            : 'Выберите устройство «Видоискатель — тестовая камера» во внешнем приложении Windows. Пока телефон не подключён, виртуальная камера выдаёт резервный синтетический кадр.'}
+          {transport.frames !== undefined && transport.frames > 0 && (
+            <span className="camera-frame-note"> Кадров передано: {transport.frames}{transport.dropped ? `, пропущено: ${transport.dropped}` : ''}.</span>
+          )}
         </div>
         <section className={`gpu-probe-panel ${gpuTextureProbe.phase}`} aria-live="polite">
           <div className="gpu-probe-heading">
@@ -684,7 +752,7 @@ function CameraPage({
               {gpuTextureProbe.phase === 'running' ? 'Проверяем…' : 'Запустить проверку'}
             </button>
           </div>
-          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не сквозную задержку телефона. Кадр копируется в staging-текстуру, затем CPU хэширует редкую сетку пикселей. Основной путь VideoFrame.copyTo(RGBA) → CPU-конвертация в NV12 → shared memory уже подключается; преимуществ GPU пока не доказано. Переключаться можно только после сравнения обоих трактов на тех же разрешении и частоте.</p>
+          <p>Этот эксперимент измеряет только GPU shared-texture Chromium → Direct3D 11 (D3D11), не сквозную задержку телефона. Основной путь VideoFrame.copyTo(RGBA) → CPU-конвертация в NV12 → shared memory уже подключается; преимуществ GPU пока не доказано. Переключаться можно только после сравнения обоих трактов на тех же разрешении и частоте.</p>
           {(gpuTextureProbe.frameCount ?? 0) > 0 && (
             <div className="gpu-probe-metrics">
               <span>Размер <strong>{gpuTextureProbe.width}×{gpuTextureProbe.height}</strong></span>
@@ -701,11 +769,24 @@ function CameraPage({
       <aside className="panel camera-note">
         <div className="note-mark blue" aria-hidden="true">i</div>
         <h2>Проверка в приложениях Windows</h2>
-        <p>Это ранний тест установки и видеопотока. В кадре должны двигаться полосы и обновляться крупный шестизначный счётчик.</p>
+        <p>При подключённом телефоне внешние приложения показывают живую картинку камеры. Пока поток не идёт, камера выдаёт резервный кадр с полосами и счётчиком.</p>
         <div className="divider" />
-        <div className="camera-note-row"><span>Режимы</span><strong>720p / 1080p / 4K · 30 / 60 fps</strong></div>
-        <div className="camera-note-row"><span>Форматы</span><strong>NV12 · RGB32</strong></div>
-        <div className="camera-note-row"><span>Завершение</span><strong>Закрыть «Видоискатель»</strong></div>
+        {telemetry && cameraLive ? (
+          <div className="telemetry-grid">
+            <TelemetryCell label="Разрешение" value={`${telemetry.width}×${telemetry.height}`} />
+            <TelemetryCell label="FPS" value={telemetry.fps > 0 ? telemetry.fps.toFixed(1) : '—'} />
+            <TelemetryCell label="Битрейт" value={telemetry.bitrateKbps > 0 ? `${Math.round(telemetry.bitrateKbps)} кбит/с` : '—'} />
+            <TelemetryCell label="Батарея" value={telemetry.batteryPercent >= 0 ? `${telemetry.batteryPercent}%` : '—'} />
+            <TelemetryCell label="Нагрев" value={telemetry.thermal} />
+            <TelemetryCell label="Качество" value={qualityTitle(telemetry.quality)} />
+          </div>
+        ) : (
+          <>
+            <div className="camera-note-row"><span>Режимы</span><strong>720p / 1080p / 4K · 30 / 60 fps</strong></div>
+            <div className="camera-note-row"><span>Форматы</span><strong>NV12 · RGB32</strong></div>
+            <div className="camera-note-row"><span>Завершение</span><strong>Закрыть «Видоискатель»</strong></div>
+          </>
+        )}
         <div className="camera-test-instructions">
           <strong>Оставьте приложение открытым</strong>
           <span>Проверьте webcamtests.com, OBS и Discord по очереди. Закройте их перед выходом из приложения — камера действует только пока открыт «Видоискатель».</span>
@@ -848,6 +929,31 @@ function diagnosticPhaseLabel(phase: string): string {
     passed: 'Проверка пройдена',
   };
   return labels[phase] ?? phase;
+}
+
+function pairingStatusMessage(
+  pairingMessage: string,
+  transport: CameraTransportStatus,
+  streamMode: StreamMode | null,
+): string {
+  if (streamMode === 'camera') {
+    return 'Телефон сейчас передаёт режим «Веб-камера» — изображение идёт в виртуальную камеру Windows.';
+  }
+  if (transport.phase === 'error') return transport.message;
+  return pairingMessage;
+}
+
+function qualityTitle(profile: QualityProfile): string {
+  return profile === 'auto' ? 'Авто' : profile === 'max' ? 'Максимум' : 'Экономия';
+}
+
+function TelemetryCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="telemetry-cell">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
 }
 
 export default App;
