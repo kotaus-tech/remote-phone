@@ -25,10 +25,17 @@ test('пакет NV12 имеет 32-байтовый little-endian header и т�
   packet.fill(0);
 });
 
-test('NV12 frame limits retain 4K and reject malformed dimensions and payloads', () => {
+test('NV12 frame limits retain the 4K pixel budget in any orientation', () => {
   assert.equal(nv12ByteLength(3840, 2160), MAX_PAYLOAD_BYTES);
+  assert.equal(nv12ByteLength(2160, 3840), MAX_PAYLOAD_BYTES, 'portrait 4K passes');
+  assert.equal(nv12ByteLength(1080, 2374), 1080 * 2374 * 3 / 2, 'portrait phone screens pass');
   assert.equal(nv12ByteLength(1920, 1080), 1920 * 1080 * 3 / 2);
-  for (const [width, height] of [[0, 2], [3, 4], [4, 3], [3842, 2160], [3840, 2162]]) {
+  for (const [width, height] of [
+    [0, 2], [3, 4], [4, 3],
+    [4098, 4098], // beyond the per-side cap
+    [4000, 3000], // within the per-side cap, beyond the 4K pixel budget
+    [3840, 2162],
+  ]) {
     assert.throws(() => nv12ByteLength(width, height));
   }
   assert.throws(() => encodeNv12FramePacket({ width: 4, height: 4, timestampNs: 1, data: Buffer.alloc(23) }));

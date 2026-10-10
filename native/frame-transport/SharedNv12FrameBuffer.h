@@ -12,8 +12,13 @@ namespace remotephone {
 namespace frame {
 
 constexpr UINT32 kFrameChannelVersion = 1;
-constexpr UINT32 kMaxFrameWidth = 3840;
-constexpr UINT32 kMaxFrameHeight = 2160;
+// Any orientation inside the 4K pixel budget: portrait phone screens are
+// taller than 2160 scan lines (e.g. 1080×2374), so the per-side cap is 4096
+// and IsValidNv12FrameDimensions enforces width*height <= kMaxFramePixels.
+// The slot capacity stays 4K-sized (kMaxFrameBytes is unchanged).
+constexpr UINT32 kMaxFrameWidth = 4096;
+constexpr UINT32 kMaxFrameHeight = 4096;
+constexpr ULONGLONG kMaxFramePixels = 3840ULL * 2160ULL;
 constexpr UINT32 kFrameSlotCount = 3;
 constexpr UINT32 kPixelFormatNv12 = 1;
 constexpr ULONGLONG kFrameStaleAfterMs = 3000;

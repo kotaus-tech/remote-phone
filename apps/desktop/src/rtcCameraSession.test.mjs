@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RtcCameraSession } from './rtcCameraSession.ts';
 
-function installBrowserMocks({ videoFrameLayout, videoFrameError } = {}) {
+function installBrowserMocks({ videoFrameLayout, videoFrameError, frameWidth = 4, frameHeight = 2 } = {}) {
   const previous = new Map();
   const globals = ['window', 'document', 'MediaStream', 'VideoFrame', 'RTCPeerConnection'];
   for (const name of globals) previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -87,8 +87,8 @@ function installBrowserMocks({ videoFrameLayout, videoFrameError } = {}) {
 
   class FakeVideoFrame {
     constructor(_source, init) {
-      this.codedWidth = 4;
-      this.codedHeight = 2;
+      this.codedWidth = frameWidth;
+      this.codedHeight = frameHeight;
       this.timestamp = init.timestamp;
       this.closed = false;
       FakeVideoFrame.last = this;
@@ -97,10 +97,8 @@ function installBrowserMocks({ videoFrameLayout, videoFrameError } = {}) {
       this.copyOptions = options;
       if (videoFrameError) throw videoFrameError;
       assert.equal(options.format, 'RGBA');
-      destination.set([
-        255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
-        255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
-      ]);
+      assert.equal(destination.length, frameWidth * frameHeight * 4);
+      destination.fill(0);
       return videoFrameLayout ? videoFrameLayout(options.layout) : options.layout;
     }
     close() { this.closed = true; }
@@ -141,11 +139,10 @@ function installBrowserMocks({ videoFrameLayout, videoFrameError } = {}) {
           this.cancelledCallback = id;
         },
         emitVideoFrame(mediaTime) {
-          const entry = callbacks.entries().next().value;
-          if (!entry) throw new Error('No scheduled video-frame callback');
-          const [id, callback] = entry;
-          callbacks.delete(id);
-          callback(0, { mediaTime });
+          if (callbacks.size === 0) throw new Error('No scheduled video-frame callback');
+          const scheduled = [...callbacks.values()];
+          callbacks.clear();
+          for (const callback of scheduled) callback(0, { mediaTime });
         },
       };
       videos.push(video);
@@ -190,6 +187,17 @@ function createApi() {
       return { ok: true, dropped: false };
     },
   };
+}
+
+function deliverSessionInfo(browser, mode, quality = 'auto') {
+  browser.peer.localDataChannel.onmessage({
+    data: new TextEncoder().encode(JSON.stringify({
+      v: 1,
+      type: 'session-info',
+      mode,
+      quality,
+    })),
+  });
 }
 
 async function settleAsyncWork() {
@@ -248,6 +256,7 @@ test('копирует входящий VideoFrame в RGBA, конвертиру
   const peer = browser.peer;
   peer.connectionState = 'connected';
   peer.onconnectionstatechange();
+  deliverSessionInfo(browser, 'camera');
   peer.ontrack({ track });
   await settleAsyncWork();
 
@@ -263,7 +272,7 @@ test('копирует входящий VideoFrame в RGBA, конвертиру
     width: 4,
     height: 2,
     timestampNs: '1250000000',
-    data: [63, 63, 173, 173, 63, 63, 173, 173, 102, 240, 42, 26],
+    data: [16, 16, 16, 16, 16, 16, 16, 16, 128, 128, 128, 128],
   });
   assert.deepEqual(browser.lastVideoFrame.copyOptions, {
     format: 'RGBA',
@@ -273,13 +282,119 @@ test('копирует входящий VideoFrame в RGBA, конвертиру
   assert.ok(statuses.some((status) => status.phase === 'receiving' && status.frames === 1));
   assert.equal(video.callbacks.size, 1, 'a subsequent frame callback should be scheduled');
 
+  assert.equal(video.callbacks.size, 1, 'the copy loop stays scheduled between frames');
   session.stop();
   assert.equal(track.stopped, true);
   assert.equal(video.paused, true);
   assert.equal(video.removed, true);
-  assert.equal(video.cancelledCallback, 2);
+  assert.equal(video.callbacks.size, 0);
+  assert.ok(video.cancelledCallback, 'the pending copy callback is cancelled');
   assert.equal(peer.closed, true);
   assert.equal(browser.timers.size, 0);
+});
+
+test('портретный кадр 1080×2374 проходит в NV12, а размер вне бюджета 4K не рвёт сеанс', async (t) => {
+  const browser = installBrowserMocks({ frameWidth: 1080, frameHeight: 2374 });
+  t.after(browser.restore);
+  const api = createApi();
+  const statuses = [];
+  const session = new RtcCameraSession(api, (status) => statuses.push(status));
+  const track = {
+    kind: 'video',
+    readyState: 'live',
+    onended: null,
+    stopped: false,
+    stop() { this.stopped = true; },
+  };
+
+  await session.start();
+  deliverSessionInfo(browser, 'camera', 'max');
+  browser.peer.ontrack({ track });
+  await settleAsyncWork();
+  browser.videos[0].emitVideoFrame(0.04);
+  await settleAsyncWork();
+
+  assert.equal(api.writtenFrames.length, 1);
+  const written = api.writtenFrames[0];
+  assert.equal(written.width, 1080);
+  assert.equal(written.height, 2374);
+  assert.equal(written.data.length, 1080 * 2374 * 3 / 2);
+  assert.equal(written.data[0], 16, 'black limited-range luma');
+  assert.equal(written.data[1080 * 2374], 128, 'neutral chroma');
+  assert.ok(statuses.some((status) => status.phase === 'receiving' && status.frames === 1));
+
+  session.stop();
+  assert.equal(browser.peer.closed, true);
+  assert.equal(browser.timers.size, 0);
+});
+
+test('кадр сверх лимитов отбрасывается без разрыва сеанса', async (t) => {
+  const browser = installBrowserMocks({ frameWidth: 4000, frameHeight: 3000 });
+  t.after(browser.restore);
+  const api = createApi();
+  const statuses = [];
+  const session = new RtcCameraSession(api, (status) => statuses.push(status));
+  const track = {
+    kind: 'video',
+    readyState: 'live',
+    onended: null,
+    stopped: false,
+    stop() { this.stopped = true; },
+  };
+
+  await session.start();
+  deliverSessionInfo(browser, 'camera');
+  browser.peer.ontrack({ track });
+  await settleAsyncWork();
+  browser.videos[0].emitVideoFrame(0.5);
+  await settleAsyncWork();
+
+  assert.equal(api.writtenFrames.length, 0);
+  assert.ok(statuses.some((status) => status.phase === 'receiving'
+    && status.message.includes('Кадр пропущен')
+    && status.message.includes('4000×3000')));
+  assert.equal(api.sentSignals.some((signal) => signal.type === 'bye'), false);
+  assert.equal(browser.peer.closed, false);
+  assert.equal(track.stopped, false);
+
+  session.stop();
+  assert.equal(browser.peer.closed, true);
+});
+
+test('режим «Экран» не запускает NV12-цикл, но первый кадр снимает таймер ожидания', async (t) => {
+  const browser = installBrowserMocks();
+  t.after(browser.restore);
+  const api = createApi();
+  const statuses = [];
+  const session = new RtcCameraSession(api, (status) => statuses.push(status));
+  const track = {
+    kind: 'video',
+    readyState: 'live',
+    onended: null,
+    stopped: false,
+    stop() { this.stopped = true; },
+  };
+
+  await session.start();
+  const peer = browser.peer;
+  peer.connectionState = 'connected';
+  peer.onconnectionstatechange();
+  deliverSessionInfo(browser, 'screen');
+  peer.ontrack({ track });
+  await settleAsyncWork();
+  assert.equal(browser.timers.size, 1, 'the first-frame watchdog is armed after connect');
+
+  browser.videos[0].emitVideoFrame(0.2);
+  await settleAsyncWork();
+
+  assert.equal(api.writtenFrames.length, 0, 'screen mode never feeds the NV12 pipeline');
+  assert.equal(browser.videos[0].callbacks.size, 0);
+  assert.equal(browser.timers.size, 0, 'any presented frame disarms the watchdog');
+  assert.equal(api.sentSignals.some((signal) => signal.type === 'bye'), false);
+  assert.equal(browser.peer.closed, false);
+
+  session.stop();
+  assert.equal(browser.peer.closed, true);
 });
 
 test('отклоняет RGBA-разметку с padding и не передаёт невалидный кадр в host', async (t) => {
@@ -299,19 +414,23 @@ test('отклоняет RGBA-разметку с padding и не передаё
   };
 
   await session.start();
+  deliverSessionInfo(browser, 'camera');
   browser.peer.ontrack({ track });
   await settleAsyncWork();
   browser.videos[0].emitVideoFrame(0.5);
   await settleAsyncWork();
 
   assert.equal(api.writtenFrames.length, 0);
-  assert.ok(statuses.some((status) => status.phase === 'error'
+  assert.ok(statuses.some((status) => status.phase === 'receiving'
+    && status.message.includes('Кадр пропущен')
     && status.message.includes('плотную одноплоскостную разметку RGBA')));
-  assert.equal(api.sentSignals.at(-1).type, 'bye');
+  assert.equal(api.sentSignals.some((signal) => signal.type === 'bye'), false);
   assert.equal(browser.lastVideoFrame.closed, true);
-  assert.equal(track.stopped, true);
-  assert.equal(browser.peer.closed, true);
-  assert.equal(browser.videos[0].removed, true);
+  assert.equal(track.stopped, false);
+  assert.equal(browser.peer.closed, false);
+  assert.equal(browser.videos[0].removed, false);
+
+  session.stop();
 });
 
 
@@ -330,19 +449,23 @@ test('сообщает об ошибке чтения RGBA и завершает
   };
 
   await session.start();
+  deliverSessionInfo(browser, 'camera');
   browser.peer.ontrack({ track });
   await settleAsyncWork();
   browser.videos[0].emitVideoFrame(0.5);
   await settleAsyncWork();
 
   assert.equal(api.writtenFrames.length, 0);
-  assert.ok(statuses.some((status) => status.phase === 'error'
+  assert.ok(statuses.some((status) => status.phase === 'receiving'
+    && status.message.includes('Кадр пропущен')
     && status.message.includes('Не удалось скопировать кадр WebRTC в RGBA')
     && status.message.includes('This pixel format conversion is not supported.')));
-  assert.equal(api.sentSignals.at(-1).type, 'bye');
+  assert.equal(api.sentSignals.some((signal) => signal.type === 'bye'), false);
   assert.equal(browser.lastVideoFrame.closed, true);
-  assert.equal(track.stopped, true);
-  assert.equal(browser.peer.closed, true);
+  assert.equal(track.stopped, false);
+  assert.equal(browser.peer.closed, false);
+
+  session.stop();
 });
 
 test('сбрасывает статус и закрывает ресурсы при завершении видеосеанса телефоном', async (t) => {

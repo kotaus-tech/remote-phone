@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CameraHostStatus,
   GpuTextureProbeStatus,
@@ -79,6 +79,13 @@ function App() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const sessionRef = useRef<RtcCameraSession | null>(null);
   const heading = headings[page];
+
+  // Stable identity: the preview pages re-attach in an effect keyed on this
+  // callback, so a fresh closure per render would reset srcObject (and blink
+  // the video black) on every telemetry update.
+  const handleVideoReady = useCallback((element: HTMLVideoElement | null) => {
+    sessionRef.current?.attachExternalVideo(element);
+  }, []);
 
   useEffect(() => {
     const api = window.remotePhone;
@@ -262,7 +269,7 @@ function App() {
                   if (applied !== flag) setAlwaysOnTop(applied);
                 });
               }}
-              onVideoReady={(element) => sessionRef.current?.attachExternalVideo(element)}
+              onVideoReady={handleVideoReady}
               onStopStream={() => sessionRef.current?.sendStopStream()}
               onQuality={(value) => sessionRef.current?.sendQuality(value)}
               onGoToCamera={() => setPage('camera')}
@@ -277,7 +284,7 @@ function App() {
               connected={connected}
               streamMode={streamMode}
               telemetry={phoneTelemetry}
-              onVideoReady={(element) => sessionRef.current?.attachExternalVideo(element)}
+              onVideoReady={handleVideoReady}
               onStopStream={() => sessionRef.current?.sendStopStream()}
               onQuality={(value) => sessionRef.current?.sendQuality(value)}
             />
@@ -498,11 +505,14 @@ function ScreenPage({
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const live = connected && streamMode === 'screen';
 
+  // `live` is a dependency: the <video> element mounts when the screen mode
+  // starts, and the session must attach the track at that moment.
   useEffect(() => {
     onVideoReady(videoRef.current);
     return () => onVideoReady(null);
-  }, [onVideoReady]);
+  }, [onVideoReady, live]);
 
   useEffect(() => {
     const element = stageRef.current;
@@ -519,7 +529,6 @@ function ScreenPage({
     return () => element.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const live = connected && streamMode === 'screen';
   const cameraActive = connected && streamMode === 'camera';
   const aspect = telemetry && telemetry.width > 0
     ? `${telemetry.width} / ${telemetry.height}`
@@ -659,10 +668,13 @@ function CameraPage({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [mirror, setMirror] = useState(false);
 
+  const cameraLive = connected && streamMode === 'camera';
+  // `cameraLive` is a dependency: the preview element mounts when the webcam
+  // mode starts, and the session must attach the track at that moment.
   useEffect(() => {
     onVideoReady(videoRef.current);
     return () => onVideoReady(null);
-  }, [onVideoReady]);
+  }, [onVideoReady, cameraLive]);
 
   const isRunning = status.phase === 'running';
   const statusLabel = isRunning
@@ -674,8 +686,6 @@ function CameraPage({
         : status.phase === 'unavailable'
           ? 'Недоступна в этом режиме'
           : 'Не удалось запустить';
-  const cameraLive = connected && streamMode === 'camera';
-
   return (
     <section className="camera-layout">
       <article className="panel camera-panel">

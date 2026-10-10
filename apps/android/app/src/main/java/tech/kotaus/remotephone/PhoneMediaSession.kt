@@ -5,11 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
+import android.view.Display
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.PowerManager
+import android.view.Surface
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -100,6 +103,7 @@ private const val MAX_RTC_MID_BYTES = 256
 private const val MAX_DATA_MESSAGE_BYTES = 4096
 private const val MAX_CONTROL_MESSAGES = 512
 private const val TELEMETRY_PERIOD_MS = 2000L
+private const val ROTATION_RESTART_MIN_INTERVAL_MS = 1500L
 private const val CONTROL_CHANNEL_LABEL = "remote-phone-control"
 
 /**
@@ -138,6 +142,13 @@ internal class PhoneMediaSession(
     private var captureWidth = 0
     private var captureHeight = 0
     private var captureFps = 0
+
+    // Physical rotation tracking: Camera2 freezes frame orientation at capture
+    // start, so a rotated phone needs a capture restart to update the stream.
+    private var displayListener: DisplayManager.DisplayListener? = null
+    private var appliedRotation: Int = -1
+    private var rotationRestartQueued = false
+    private var lastRotationRestartMs = 0L
 
     private var peerConnection: PeerConnection? = null
     private var senderMaxBitrateApplied = false
@@ -394,9 +405,66 @@ internal class PhoneMediaSession(
         capturer = capturerLocal
         capturerLocal.initialize(helper, context.applicationContext, source.capturerObserver)
         capturerLocal.startCapture(captureFormat.width, captureFormat.height, targetFps)
+        appliedRotation = currentDisplayRotation()
+        registerCameraRotationListener()
         onStatus(
             "Camera2 запущена: ${captureFormat.width}×${captureFormat.height}, до $targetFps fps, качество «${quality.title}»."
         )
+    }
+
+    private fun currentDisplayRotation(): Int = runCatching {
+        val manager = context.getSystemService(DisplayManager::class.java)
+        return@runCatching manager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation
+            ?: Surface.ROTATION_0
+    }.getOrDefault(Surface.ROTATION_0)
+
+    private fun registerCameraRotationListener() {
+        if (displayListener != null) return
+        val manager = context.getSystemService(DisplayManager::class.java) ?: return
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                handler.post { restartCameraIfRotationChanged() }
+            }
+        }
+        displayListener = listener
+        runCatching { manager.registerDisplayListener(listener, handler) }
+    }
+
+    private fun unregisterCameraRotationListener() {
+        val listener = displayListener ?: return
+        displayListener = null
+        runCatching {
+            context.getSystemService(DisplayManager::class.java)
+                ?.unregisterDisplayListener(listener)
+        }
+    }
+
+    /** Camera2 freezes orientation per capture session; restart on rotation. */
+    private fun restartCameraIfRotationChanged() {
+        if (closed || ended || mode != PhoneStreamMode.CAMERA) return
+        val capturerLocal = capturer ?: return
+        val rotation = currentDisplayRotation()
+        if (rotation == appliedRotation) return
+        val now = System.currentTimeMillis()
+        if (now - lastRotationRestartMs < ROTATION_RESTART_MIN_INTERVAL_MS) {
+            if (!rotationRestartQueued) {
+                rotationRestartQueued = true
+                handler.postDelayed({
+                    rotationRestartQueued = false
+                    restartCameraIfRotationChanged()
+                }, ROTATION_RESTART_MIN_INTERVAL_MS)
+            }
+            return
+        }
+        lastRotationRestartMs = now
+        appliedRotation = rotation
+        runCatching { capturerLocal.stopCapture() }
+            .onFailure { onStatus("Камера не приостановилась для смены ориентации: ${it.message}") }
+        runCatching { capturerLocal.startCapture(captureWidth, captureHeight, captureFps) }
+            .onSuccess { onStatus("Ориентация камеры обновлена после поворота телефона.") }
+            .onFailure { fail("Камера не возобновила работу после поворота телефона: ${it.message}") }
     }
 
     private fun startScreenCapture(helper: SurfaceTextureHelper, source: VideoSource) {
@@ -842,6 +910,7 @@ internal class PhoneMediaSession(
     }
 
     private fun closeResources() {
+        unregisterCameraRotationListener()
         disposeTransport()
         runCatching { capturer?.stopCapture() }
         runCatching { capturer?.dispose() }

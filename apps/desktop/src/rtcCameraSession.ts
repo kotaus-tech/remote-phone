@@ -68,10 +68,14 @@ export type MediaSessionListeners = {
   onStreamMode?: (mode: StreamMode | null) => void;
 };
 
-const MAX_WIDTH = 3840;
-const MAX_HEIGHT = 2160;
-const MAX_NV12_BYTES = MAX_WIDTH * MAX_HEIGHT * 3 / 2;
-const MAX_RGBA_BYTES = MAX_WIDTH * MAX_HEIGHT * 4;
+// Portrait phone screens exceed 2160 scan lines (e.g. 1080×2374), so the
+// per-side cap is 4096 while the 4K pixel budget keeps the NV12 slot and
+// scratch buffers at their original 3840×2160 size.
+const MAX_WIDTH = 4096;
+const MAX_HEIGHT = 4096;
+const MAX_FRAME_PIXELS = 3840 * 2160;
+const MAX_NV12_BYTES = MAX_FRAME_PIXELS * 3 / 2;
+const MAX_RGBA_BYTES = MAX_FRAME_PIXELS * 4;
 const MAX_RTC_CANDIDATES = 128;
 const CONNECTION_TIMEOUT_MS = 30_000;
 const FIRST_FRAME_TIMEOUT_MS = 15_000;
@@ -100,6 +104,7 @@ export class RtcCameraSession {
   private framesWritten = 0;
   private framesDropped = 0;
   private reportedWriteFailure = false;
+  private lastDropReason = '';
   private readonly frameScratch: VideoFrameScratchBuffers = { rgba: null, nv12: null };
   private connectionTimer: number | null = null;
   private firstFrameTimer: number | null = null;
@@ -414,6 +419,8 @@ export class RtcCameraSession {
         if (message.mode === 'screen') {
           // The visible viewer renders natively; no NV12 copy is needed.
           this.cancelScheduledVideoFrame();
+        } else {
+          this.ensureNv12Loop();
         }
         this.listeners.onSessionInfo?.(message);
         this.listeners.onStreamMode?.(message.mode);
@@ -423,8 +430,10 @@ export class RtcCameraSession {
         // one-time session-info frame was missed, recover the mode from it.
         if (this.streamMode !== message.mode) {
           this.streamMode = message.mode;
+          if (message.mode === 'screen') this.cancelScheduledVideoFrame();
           this.listeners.onStreamMode?.(message.mode);
         }
+        if (this.streamMode === 'camera') this.ensureNv12Loop();
       }
     } catch {
       // Malformed control frames are dropped; media keeps flowing.
@@ -455,13 +464,30 @@ export class RtcCameraSession {
 
     await video.play();
     if (this.stopped || this.video !== video) return;
+    // Any presented frame proves the media path regardless of stream mode;
+    // the NV12-only counters must not kill screen-mode sessions.
+    const element = video as VideoElementWithFrameCallbacks;
+    if (typeof element.requestVideoFrameCallback === 'function') {
+      element.requestVideoFrameCallback(() => this.clearFirstFrameTimer());
+    } else {
+      video.addEventListener('loadeddata', () => this.clearFirstFrameTimer(), { once: true });
+    }
+    this.ensureNv12Loop(video, track);
+  }
+
+  /** Starts (or restarts) the NV12 copy loop; screen mode never runs it. */
+  private ensureNv12Loop(video: HTMLVideoElement | null = this.video, track: MediaStreamTrack | null = this.videoTrack): void {
+    if (this.streamMode !== 'camera') return;
+    if (!video || !track || this.stopped || this.video !== video) return;
+    if (this.scheduledVideoFrame !== null) return;
     this.scheduleVideoFrame(video, track);
   }
 
   private scheduleVideoFrame(video: HTMLVideoElement, track: MediaStreamTrack): void {
     if (this.stopped || this.video !== video || track.readyState !== 'live') return;
-    // Screen mode renders through the visible viewer; skip the NV12 copy loop.
-    if (this.streamMode === 'screen') return;
+    // Only webcam mode feeds the virtual camera; the screen viewer renders
+    // natively from the visible video element.
+    if (this.streamMode !== 'camera') return;
     const element = video as VideoElementWithFrameCallbacks;
     if (typeof element.requestVideoFrameCallback === 'function') {
       const id = element.requestVideoFrameCallback((now, metadata) => {
@@ -533,7 +559,24 @@ export class RtcCameraSession {
         });
       }
     } catch (error) {
-      if (!this.stopped) this.fail(error instanceof Error ? error.message : 'Не удалось прочитать видеокадр.');
+      // A single bad frame (decode hiccup, transient size change) must not
+      // tear down the whole session: count it and warn in a throttled way.
+      if (!this.stopped) {
+        this.framesDropped += 1;
+        const reason = error instanceof Error ? error.message : 'неизвестная ошибка';
+        if (this.framesDropped === 1 || this.framesDropped % 150 === 0
+          || this.lastDropReason !== reason) {
+          this.lastDropReason = reason;
+          this.onStatus({
+            phase: 'receiving',
+            message: `Кадр пропущен (${reason}); трансляция продолжается.`,
+            width: this.video?.videoWidth || undefined,
+            height: this.video?.videoHeight || undefined,
+            frames: this.framesWritten,
+            dropped: this.framesDropped,
+          });
+        }
+      }
     } finally {
       this.frameScratch.nv12?.fill(0);
       frame?.close();
@@ -602,22 +645,28 @@ export class RtcCameraSession {
   }
 }
 
+/** Shared rule with the native buffer: any orientation inside the 4K pixel budget. */
+export function isSupportedFrameSize(width: number, height: number): boolean {
+  return Number.isInteger(width) && Number.isInteger(height)
+    && width >= 2 && height >= 2 && (width & 1) === 0 && (height & 1) === 0
+    && width <= MAX_WIDTH && height <= MAX_HEIGHT
+    && width * height <= MAX_FRAME_PIXELS;
+}
+
 async function copyFrameToPackedNv12(
   frame: WebCodecsVideoFrame,
   scratch: VideoFrameScratchBuffers,
 ): Promise<Uint8Array> {
   const width = frame.codedWidth;
   const height = frame.codedHeight;
-  if (!Number.isInteger(width) || !Number.isInteger(height)
-    || width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0
-    || width > MAX_WIDTH || height > MAX_HEIGHT) {
+  if (!isSupportedFrameSize(width, height)) {
     throw new Error(`Недопустимый размер видеокадра ${width}×${height}.`);
   }
   const pixelCount = width * height;
   const packedBytes = pixelCount * 3 / 2;
   const rgbaBytes = pixelCount * 4;
   if (packedBytes > MAX_NV12_BYTES || rgbaBytes > MAX_RGBA_BYTES) {
-    throw new Error('Видеокадр превышает предел 4K.');
+    throw new Error('Видеокадр превышает предел 4K (8.3 Мп).');
   }
 
   if (!scratch.rgba || scratch.rgba.byteLength !== rgbaBytes) scratch.rgba = new Uint8Array(rgbaBytes);

@@ -17,8 +17,9 @@ constexpr LONG kInitializationInProgress = 1;
 constexpr LONG kInitializationReady = 2;
 constexpr UINT32 kSectionHeaderBytes = 64;
 constexpr UINT32 kSlotHeaderBytes = 64;
-constexpr ULONGLONG kMaxFrameBytes =
-    static_cast<ULONGLONG>(kMaxFrameWidth) * kMaxFrameHeight * 3ULL / 2ULL;
+// Slot capacity stays pinned to the 4K pixel budget (mapping size unchanged);
+// portrait frames fit because per-side limits are independent of the budget.
+constexpr ULONGLONG kMaxFrameBytes = kMaxFramePixels * 3ULL / 2ULL;
 
 struct alignas(64) MappingHeader final {
     ULONGLONG magic;
@@ -263,7 +264,8 @@ bool IsValidGlobalFrameChannelName(const std::wstring& value) noexcept {
 bool IsValidNv12FrameDimensions(UINT32 width, UINT32 height) noexcept {
     return width >= 2 && height >= 2
         && width <= kMaxFrameWidth && height <= kMaxFrameHeight
-        && (width & 1U) == 0 && (height & 1U) == 0;
+        && (width & 1U) == 0 && (height & 1U) == 0
+        && static_cast<ULONGLONG>(width) * height <= kMaxFramePixels;
 }
 
 UINT32 Nv12FrameByteLength(UINT32 width, UINT32 height) noexcept {

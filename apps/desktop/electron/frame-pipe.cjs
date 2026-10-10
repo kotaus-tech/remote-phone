@@ -1,13 +1,17 @@
-const MAX_WIDTH = 3840;
-const MAX_HEIGHT = 2160;
+// Same rule as the native buffer: any orientation inside the 4K pixel budget
+// (portrait phone screens are taller than 2160 scan lines).
+const MAX_WIDTH = 4096;
+const MAX_HEIGHT = 4096;
+const MAX_FRAME_PIXELS = 3840 * 2160;
 const HEADER_BYTES = 32;
-const MAX_PAYLOAD_BYTES = MAX_WIDTH * MAX_HEIGHT * 3 / 2;
+const MAX_PAYLOAD_BYTES = MAX_FRAME_PIXELS * 3 / 2;
 const MAGIC = 0x31465052; // ASCII RPF1 in little-endian order.
 
 function nv12ByteLength(width, height) {
   if (!Number.isInteger(width) || !Number.isInteger(height)
     || width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0
-    || width > MAX_WIDTH || height > MAX_HEIGHT) {
+    || width > MAX_WIDTH || height > MAX_HEIGHT
+    || width * height > MAX_FRAME_PIXELS) {
     throw new Error('Недопустимые размеры NV12-кадра.');
   }
   return width * height * 3 / 2;
@@ -47,6 +51,7 @@ module.exports = {
   MAGIC,
   MAX_WIDTH,
   MAX_HEIGHT,
+  MAX_FRAME_PIXELS,
   MAX_PAYLOAD_BYTES,
   nv12ByteLength,
   encodeNv12FramePacket,
